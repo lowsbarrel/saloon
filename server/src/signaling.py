@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import html
 import json
 import logging
 from typing import TYPE_CHECKING
@@ -113,8 +112,26 @@ async def handle_ws(
                 WSMessageType.ICE_CANDIDATE,
             ):
                 target_id = data.get("target_id")
-                if not target_id:
+                if not target_id or not isinstance(target_id, str):
                     continue
+
+                payload = data.get("payload")
+                if not isinstance(payload, dict):
+                    continue
+
+                # Validate signaling payload structure
+                if msg_type in (WSMessageType.OFFER, WSMessageType.ANSWER):
+                    sdp = payload.get("sdp")
+                    sdp_type = payload.get("type")
+                    if not isinstance(sdp, str) or sdp_type not in ("offer", "answer"):
+                        continue
+                    sanitized_payload = {"sdp": sdp, "type": sdp_type}
+                else:  # ICE_CANDIDATE
+                    candidate = payload.get("candidate")
+                    if not isinstance(candidate, dict):
+                        continue
+                    sanitized_payload = {"candidate": candidate}
+
                 target_peers = await store.get_peers(channel_id, user_id)
                 target = next((p for p in target_peers if p.peer_id == target_id), None)
                 if target and target.websocket:
@@ -123,7 +140,7 @@ async def handle_ws(
                         {
                             "type": msg_type,
                             "sender_id": user.peer_id,
-                            "payload": data.get("payload"),
+                            "payload": sanitized_payload,
                         },
                     )
 
@@ -159,9 +176,6 @@ async def handle_ws(
                     )
                     continue
 
-                # Server-side sanitization
-                content = html.escape(content)
-
                 chat_msg = {
                     "type": WSMessageType.CHAT_MESSAGE,
                     "sender_id": user.peer_id,
@@ -196,6 +210,26 @@ async def handle_ws(
                 current_peers = await store.get_peers(channel_id, user_id)
                 for peer in current_peers:
                     await _send_json(peer.websocket, state_msg)
+
+            # ── Intentional leave (fast path — no HTTP round-trip needed) ─
+            elif msg_type == WSMessageType.LEAVE:
+                # Keep the user registered in _active_users so they can
+                # return to the lobby without re-authenticating.
+                user.keep_alive = True
+                # Notify remaining peers immediately, before store cleanup.
+                peer_id = user.peer_id
+                remaining = await store.get_peers(channel_id, user_id)
+                if peer_id and remaining:
+                    leave_msg = WSMessage(
+                        type=WSMessageType.PEER_LEFT, sender_id=peer_id
+                    ).model_dump()
+                    for peer in remaining:
+                        await _send_json(peer.websocket, leave_msg)
+                # Clear websocket ref so the finally-block doesn't
+                # re-run the leave logic when the client closes the WS.
+                user.websocket = None
+                await store.leave(channel_id, user_id)
+                break
 
     except WebSocketDisconnect:
         pass

@@ -9,6 +9,7 @@ interface SessionData {
 	serverUrl: string;
 	userId: string;
 	username: string;
+	token: string;
 	channelId: string | null;
 }
 
@@ -25,7 +26,7 @@ export function loadSession(): SessionData | null {
 		const raw = sessionStorage.getItem(KEY);
 		if (!raw) return null;
 		const data = JSON.parse(raw);
-		if (data && typeof data.serverUrl === 'string' && typeof data.userId === 'string') {
+		if (data && typeof data.serverUrl === 'string' && typeof data.userId === 'string' && typeof data.token === 'string') {
 			return data as SessionData;
 		}
 	} catch {

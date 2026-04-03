@@ -16,6 +16,7 @@ export const lastServerUrl = writable<string>('');
 
 export const userId = writable<string>('');
 export const username = writable<string>('');
+export const authToken = writable<string>('');
 
 // ── Channel ───────────────────────────────────────────────────────────────
 
@@ -62,13 +63,14 @@ export const peerList = derived(peers, ($peers) => Array.from($peers.values()));
 
 /** Save current session state to sessionStorage. */
 export function persistSession(channelId: string | null = null): void {
-	let url = '', uid = '', uname = '';
+	let url = '', uid = '', uname = '', tok = '';
 	serverUrl.subscribe((v) => (url = v))();
 	userId.subscribe((v) => (uid = v))();
 	username.subscribe((v) => (uname = v))();
+	authToken.subscribe((v) => (tok = v))();
 
-	if (url && uid && uname) {
-		saveSession({ serverUrl: url, userId: uid, username: uname, channelId });
+	if (url && uid && uname && tok) {
+		saveSession({ serverUrl: url, userId: uid, username: uname, token: tok, channelId });
 	}
 }
 
@@ -86,6 +88,7 @@ export function resetState(): void {
 	isConnected.set(false);
 	userId.set('');
 	username.set('');
+	authToken.set('');
 	currentChannel.set(null);
 	channels.set([]);
 	chatMessages.set([]);

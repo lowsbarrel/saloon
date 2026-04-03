@@ -2,8 +2,8 @@
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import { get } from 'svelte/store';
-	import { setBaseUrl, healthCheck, listChannels, checkUser } from '$lib/api';
-	import { serverUrl, isConnected, userId, username, lastServerUrl } from '$lib/stores';
+	import { setBaseUrl, setAuthToken, healthCheck, checkUser } from '$lib/api';
+	import { serverUrl, isConnected, userId, username, authToken, lastServerUrl } from '$lib/stores';
 	import { loadSession } from '$lib/session';
 	import { ArrowRight, Loader2 } from 'lucide-svelte';
 	import FlameKindling from 'lucide-svelte/icons/flame-kindling';
@@ -22,22 +22,28 @@
 			url = session.serverUrl;
 		}
 
-		if (session) {
+		if (session?.token) {
 			setBaseUrl(session.serverUrl);
+			setAuthToken(session.token);
 			const ok = await healthCheck();
 			if (ok) {
-				const userValid = await checkUser(session.userId);
-				if (userValid) {
-					serverUrl.set(session.serverUrl);
-					isConnected.set(true);
-					userId.set(session.userId);
-					username.set(session.username);
-					goto(session.channelId ? `/channel/${session.channelId}` : '/lobby');
-					return;
-				} else {
+				try {
+					const result = await checkUser();
+					if (result.valid) {
+						serverUrl.set(session.serverUrl);
+						isConnected.set(true);
+						userId.set(result.user_id);
+						username.set(result.username);
+						authToken.set(session.token);
+						goto(session.channelId ? `/channel/${session.channelId}` : '/lobby');
+						return;
+					}
+				} catch {
 					error = 'Session expired. Please reconnect.';
 				}
 			}
+			// Reset token if session restore failed
+			setAuthToken('');
 		}
 	});
 

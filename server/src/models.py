@@ -31,6 +31,9 @@ class WSMessageType(str, Enum):
     # Errors
     ERROR = "error"
 
+    # Client-initiated leave (faster than REST for peer notification)
+    LEAVE = "leave"
+
 
 # ── Request models ─────────────────────────────────────────────────────────
 
@@ -54,8 +57,8 @@ class CreateChannelRequest(BaseModel):
     @classmethod
     def validate_password(cls, v: str | None, info) -> str | None:
         is_private = info.data.get("is_private", False)
-        if is_private and (v is None or len(v) < 4):
-            raise ValueError("Private channels require a password (min 4 chars)")
+        if is_private and (v is None or len(v) < 8):
+            raise ValueError("Private channels require a password (min 8 chars)")
         if not is_private:
             return None
         return v
@@ -63,7 +66,6 @@ class CreateChannelRequest(BaseModel):
 
 class JoinChannelRequest(BaseModel):
     password: str | None = None
-    user_id: str
 
 
 class UsernameRequest(BaseModel):
@@ -111,6 +113,11 @@ class ChannelInfo(BaseModel):
 class UsernameResponse(BaseModel):
     user_id: str
     username: str
+    token: str
+
+
+class IceServersResponse(BaseModel):
+    ice_servers: list[dict]
 
 
 class WSMessage(BaseModel):
@@ -132,6 +139,7 @@ class User:
         "websocket",
         "peer_id",
         "keep_alive",
+        "created_at",
     )
 
     def __init__(self, *, id: str, username: str, websocket=None):
@@ -142,6 +150,7 @@ class User:
         self.websocket = websocket
         self.peer_id: str | None = None
         self.keep_alive: bool = False
+        self.created_at: float = __import__("time").time()
 
     def to_info(self) -> UserInfo:
         return UserInfo(

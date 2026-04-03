@@ -48,5 +48,26 @@ class Settings(BaseSettings):
     # ── Username generation ────────────────────────────────────────────
     username_max_retries: int = 50
 
+    # ── Auth tokens ────────────────────────────────────────────────────
+    auth_secret: str = ""  # random per-start if empty
+    token_ttl: int = 86400  # 24 hours
+
+    # ── User TTL (seconds without WS before auto-cleanup) ─────────────
+    user_ttl: float = 300.0  # 5 minutes
+
+    # ── Rate limiter GC interval (seconds) ─────────────────────────────
+    rate_gc_interval: float = 120.0
+
+    # ── coturn (STUN + TURN) ──────────────────────────────────────────
+    coturn_host: str = "coturn"  # hostname of the coturn container
+    coturn_port: int = 3478
+    coturn_tls_port: int = 5349
+    turn_username: str = "saloon"
+    turn_credential: str = "saloon-secret"
+    turn_realm: str = "saloon"
+
+    # ── Trusted proxy header ───────────────────────────────────────────
+    trusted_proxy: bool = False
+
 
 settings = Settings()

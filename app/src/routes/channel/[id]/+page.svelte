@@ -3,7 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { onMount, onDestroy } from 'svelte';
 	import { get } from 'svelte/store';
-	import { leaveChannel } from '$lib/api';
+	import { leaveChannel, getIceServers } from '$lib/api';
 	import {
 		userId,
 		username,
@@ -29,13 +29,14 @@
 		MonitorOff,
 		LogOut,
 		Send,
-		Volume2,
 		Maximize2,
 		Minimize2,
 		X,
 		MessageSquare,
 		Users,
-		ChevronRight
+		ChevronRight,
+		ChevronDown,
+		Settings
 	} from 'lucide-svelte';
 
 	const channelId = $derived($page.params.id ?? '');
@@ -54,6 +55,13 @@
 	// Flag to prevent error handler from wiping state on intentional leave
 	let intentionalLeave = false;
 
+	// Audio device selection
+	let showDevicePicker = $state(false);
+	let audioInputDevices: MediaDeviceInfo[] = $state([]);
+	let audioOutputDevices: MediaDeviceInfo[] = $state([]);
+	let selectedInputId = $state('');
+	let selectedOutputId = $state('');
+
 	const unsubs: (() => void)[] = [];
 
 	// Derived: peers who are sharing screens
@@ -69,6 +77,15 @@
 
 		try {
 			const pm = createPeerManager(uid);
+
+			// Fetch ICE servers (includes TURN if configured)
+			try {
+				const iceConfig = await getIceServers();
+				pm.setIceServers(iceConfig.ice_servers);
+			} catch {
+				// Fall back to default STUN-only config
+			}
+
 			await pm.initLocalAudio();
 
 			unsubs.push(peerList.subscribe((v) => (peerArray = v)));
@@ -195,7 +212,7 @@
 				})
 			);
 
-			await signalingClient.connect(channelId, uid);
+			await signalingClient.connect(channelId);
 			persistSession(channelId);
 		} catch (e: unknown) {
 			error = e instanceof Error ? e.message : 'Failed to join channel';
@@ -210,19 +227,21 @@
 		signalingClient.disconnect();
 	});
 
-	async function leave() {
+	function leave() {
 		intentionalLeave = true;
-		// Unsubscribe all signaling handlers BEFORE any async work so no
-		// queued onclose/error event can call resetState() during the await.
+		// Unsubscribe all signaling handlers immediately so no queued
+		// onclose/error event can call resetState() after we navigate.
 		for (const unsub of unsubs) unsub();
 		unsubs.length = 0;
-		// REST leave FIRST — tells the server to keep the user alive for lobby.
-		// Must happen before WS disconnect so the server sets keep_alive flag.
-		try {
-			await leaveChannel(channelId, get(userId));
-		} catch {
-			// Best effort — server may already have cleaned up
-		}
+		// Fast path: signal leave over the already-open WebSocket. The server
+		// notifies remaining peers inline — no HTTP round-trip needed.
+		// send() is synchronous (buffers into the socket); the message is
+		// guaranteed to be flushed before the Close frame that disconnect() sends.
+		signalingClient.send({ type: 'leave' });
+		// Fallback: fire-and-forget REST call in case the WS message was lost
+		// (e.g. socket was already closing). Also acts as a belt-and-suspenders
+		// keep_alive guard so the user stays registered for the lobby.
+		leaveChannel(channelId).catch(() => {});
 		destroyPeerManager();
 		signalingClient.disconnect();
 		currentChannel.set(null);
@@ -235,6 +254,39 @@
 		const newMuted = !muted;
 		isMuted.set(newMuted);
 		getPeerManager()?.setLocalMuted(newMuted);
+	}
+
+	async function toggleDevicePicker() {
+		showDevicePicker = !showDevicePicker;
+		if (showDevicePicker) {
+			await refreshDeviceList();
+		}
+	}
+
+	async function refreshDeviceList() {
+		const devices = await navigator.mediaDevices.enumerateDevices();
+		audioInputDevices = devices.filter((d) => d.kind === 'audioinput');
+		audioOutputDevices = devices.filter((d) => d.kind === 'audiooutput');
+	}
+
+	async function switchInput(e: Event) {
+		const deviceId = (e.target as HTMLSelectElement).value;
+		selectedInputId = deviceId;
+		try {
+			await getPeerManager()?.switchAudioInput(deviceId);
+		} catch {
+			error = 'Failed to switch microphone';
+		}
+	}
+
+	async function switchOutput(e: Event) {
+		const deviceId = (e.target as HTMLSelectElement).value;
+		selectedOutputId = deviceId;
+		try {
+			await getPeerManager()?.switchAudioOutput(deviceId);
+		} catch {
+			error = 'Failed to switch speaker';
+		}
 	}
 
 	async function toggleScreenShare() {
@@ -257,6 +309,28 @@
 	function setVolume(peerId: string, e: Event) {
 		const input = e.target as HTMLInputElement;
 		getPeerManager()?.setVolume(peerId, parseFloat(input.value));
+	}
+
+	// Drag-to-volume on user cards
+	function startVolumeDrag(peerId: string, e: PointerEvent) {
+		const el = (e.currentTarget as HTMLElement);
+		el.setPointerCapture(e.pointerId);
+		updateVolFromPointer(peerId, el, e);
+
+		const onMove = (ev: PointerEvent) => updateVolFromPointer(peerId, el, ev);
+		const onUp = () => {
+			el.removeEventListener('pointermove', onMove);
+			el.removeEventListener('pointerup', onUp);
+		};
+		el.addEventListener('pointermove', onMove);
+		el.addEventListener('pointerup', onUp);
+	}
+
+	function updateVolFromPointer(peerId: string, el: HTMLElement, e: PointerEvent) {
+		const rect = el.getBoundingClientRect();
+		const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
+		const vol = Math.round((x / rect.width) * 20) / 20; // snap to 0.05
+		getPeerManager()?.setVolume(peerId, vol);
 	}
 
 	function sendChat() {
@@ -350,28 +424,33 @@
 
 					<!-- Peers -->
 					{#each peerArray as peer (peer.id)}
-						<div class="user-item">
-							<div class="user-info">
-								<span class="user-name">{peer.username}</span>
-							</div>
-							<div class="user-badges">
-								{#if peer.is_muted}
-									<span class="badge muted"><MicOff size={10} /></span>
-								{/if}
-								{#if peer.is_sharing_screen}
-									<span class="badge sharing"><Monitor size={10} /></span>
-								{/if}
-							</div>
-							<div class="volume-control">
-								<Volume2 size={10} />
-								<input
-									type="range"
-									min="0"
-									max="1"
-									step="0.05"
-									value={peer.volume}
-									oninput={(e) => setVolume(peer.id, e)}
-								/>
+						<div
+							class="user-item peer-volume"
+							onpointerdown={(e) => startVolumeDrag(peer.id, e)}
+							style="--vol: {peer.volume}"
+							role="slider"
+							aria-label="Volume for {peer.username}"
+							aria-valuenow={Math.round(peer.volume * 100)}
+							aria-valuemin={0}
+							aria-valuemax={100}
+							tabindex={0}
+						>
+							<div class="vol-fill"></div>
+							<div class="user-row">
+								<div class="user-info">
+									<span class="user-name">{peer.username}</span>
+								</div>
+								<div class="user-right">
+									<div class="user-badges">
+										{#if peer.is_muted}
+											<span class="badge muted"><MicOff size={10} /></span>
+										{/if}
+										{#if peer.is_sharing_screen}
+											<span class="badge sharing"><Monitor size={10} /></span>
+										{/if}
+									</div>
+									<span class="vol-pct">{Math.round(peer.volume * 100)}%</span>
+								</div>
 							</div>
 						</div>
 					{/each}
@@ -487,6 +566,33 @@
 					<MessageSquare size={18} />
 				</button>
 			{/if}
+			<div class="device-picker-wrap">
+				<button class="ctrl-btn" class:active={showDevicePicker} onclick={toggleDevicePicker} title="Audio devices">
+					<Settings size={18} />
+				</button>
+				{#if showDevicePicker}
+					<div class="device-picker-popup">
+						<div class="device-group">
+							<!-- svelte-ignore a11y_label_has_associated_control -->
+							<label class="device-label">Microphone</label>
+							<select class="device-select" value={selectedInputId} onchange={switchInput}>
+								{#each audioInputDevices as dev (dev.deviceId)}
+									<option value={dev.deviceId}>{dev.label || 'Microphone'}</option>
+								{/each}
+							</select>
+						</div>
+						<div class="device-group">
+							<!-- svelte-ignore a11y_label_has_associated_control -->
+							<label class="device-label">Speaker</label>
+							<select class="device-select" value={selectedOutputId} onchange={switchOutput}>
+								{#each audioOutputDevices as dev (dev.deviceId)}
+									<option value={dev.deviceId}>{dev.label || 'Speaker'}</option>
+								{/each}
+							</select>
+						</div>
+					</div>
+				{/if}
+			</div>
 			<div class="control-divider"></div>
 			<button class="ctrl-btn danger" onclick={leave} title="Leave channel">
 				<LogOut size={18} />
@@ -596,48 +702,60 @@
 		color: var(--success);
 	}
 
-	.volume-control {
+	/* ── Drag-to-volume on peer cards ────────────────────── */
+
+	.peer-volume {
+		position: relative;
+		overflow: hidden;
+		cursor: ew-resize;
+		touch-action: none;
+		user-select: none;
+	}
+
+	.vol-fill {
+		position: absolute;
+		inset: 0;
+		right: auto;
+		width: calc(var(--vol) * 100%);
+		background: color-mix(in srgb, var(--text-primary) 6%, transparent);
+		border-radius: inherit;
+		transition: width 0.06s linear;
+		pointer-events: none;
+	}
+
+	.peer-volume:hover .vol-fill,
+	.peer-volume:active .vol-fill {
+		background: color-mix(in srgb, var(--text-primary) 10%, transparent);
+	}
+
+	.user-row {
+		position: relative;
 		display: flex;
 		align-items: center;
-		gap: 8px;
-		margin-top: 4px;
+		justify-content: space-between;
+		width: 100%;
+		pointer-events: none;
+	}
+
+	.user-right {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+	}
+
+	.vol-pct {
+		font-size: 0.6rem;
 		color: var(--text-muted);
-		padding: 4px 0;
+		font-variant-numeric: tabular-nums;
+		min-width: 28px;
+		text-align: right;
+		opacity: 0;
+		transition: opacity 0.15s;
 	}
 
-	.volume-control input[type='range'] {
-		flex: 1;
-		height: 2px;
-		border: none;
-		padding: 0;
-		background: var(--border);
-		-webkit-appearance: none;
-		appearance: none;
-		border-radius: 999px;
-		outline: none;
-		transition: background 0.15s ease;
-	}
-
-	.volume-control:hover input[type='range'] {
-		background: var(--text-muted);
-	}
-
-	.volume-control input[type='range']::-webkit-slider-thumb {
-		-webkit-appearance: none;
-		width: 8px;
-		height: 8px;
-		border-radius: 50%;
-		background: var(--text-muted);
-		cursor: pointer;
-		transition: all 0.15s ease;
-		border: none;
-		box-shadow: none;
-	}
-
-	.volume-control:hover input[type='range']::-webkit-slider-thumb {
-		width: 10px;
-		height: 10px;
-		background: var(--text-primary);
+	.peer-volume:hover .vol-pct,
+	.peer-volume:active .vol-pct {
+		opacity: 1;
 	}
 
 	/* ── Center area ─────────────────────────────────────── */
@@ -961,6 +1079,58 @@
 		height: 24px;
 		background: var(--border);
 		margin: 0 6px;
+	}
+
+	/* ── Device picker ───────────────────────────────────── */
+
+	.device-picker-wrap {
+		position: relative;
+	}
+
+	.device-picker-popup {
+		position: absolute;
+		bottom: 54px;
+		left: 50%;
+		transform: translateX(-50%);
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: 14px 16px;
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+		min-width: 260px;
+		box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+		z-index: 10;
+	}
+
+	.device-group {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+
+	.device-label {
+		font-size: 0.7rem;
+		font-weight: 500;
+		text-transform: uppercase;
+		color: var(--text-muted);
+		letter-spacing: 0.06em;
+	}
+
+	.device-select {
+		width: 100%;
+		padding: 6px 10px;
+		font-size: 0.8rem;
+		border-radius: var(--radius-sm);
+		border: 1px solid var(--border);
+		background: var(--bg-tertiary);
+		color: var(--text-primary);
+		outline: none;
+	}
+
+	.device-select:focus {
+		border-color: var(--text-muted);
 	}
 
 	.error {

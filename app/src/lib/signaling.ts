@@ -1,6 +1,6 @@
 /** WebSocket signaling client for WebRTC negotiation and chat. */
 
-import { getBaseUrl } from '$lib/api';
+import { getBaseUrl, getAuthToken } from '$lib/api';
 import type { WSMessage } from '$lib/types';
 
 export type WSEventHandler = (msg: WSMessage) => void;
@@ -14,10 +14,11 @@ export class SignalingClient {
 		return this._connected;
 	}
 
-	connect(channelId: string, userId: string): Promise<void> {
+	connect(channelId: string): Promise<void> {
 		return new Promise((resolve, reject) => {
 			const base = getBaseUrl().replace(/^http/, 'ws');
-			const url = `${base}/ws/${encodeURIComponent(channelId)}?user_id=${encodeURIComponent(userId)}`;
+			const token = getAuthToken();
+			const url = `${base}/ws/${encodeURIComponent(channelId)}?token=${encodeURIComponent(token)}`;
 
 			this.ws = new WebSocket(url);
 

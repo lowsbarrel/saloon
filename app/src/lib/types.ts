@@ -18,6 +18,17 @@ export interface ChannelInfo {
 export interface UsernameResponse {
 	user_id: string;
 	username: string;
+	token: string;
+}
+
+export interface IceServersResponse {
+	ice_servers: IceServerConfig[];
+}
+
+export interface IceServerConfig {
+	urls: string | string[];
+	username?: string;
+	credential?: string;
 }
 
 export type WSMessageType =
@@ -30,7 +41,8 @@ export type WSMessageType =
 	| 'mute_state'
 	| 'screen_share_state'
 	| 'error'
-	| 'peer_list';
+	| 'peer_list'
+	| 'leave';
 
 export interface WSMessage {
 	type: WSMessageType;

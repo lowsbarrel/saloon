@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { createUsername } from '$lib/api';
-	import { userId, username, isConnected, persistSession } from '$lib/stores';
+	import { setAuthToken } from '$lib/api';
+	import { userId, username, isConnected, authToken, persistSession } from '$lib/stores';
 	import { get } from 'svelte/store';
 	import { onMount } from 'svelte';
 	import { RefreshCw, Check, Loader2, User } from 'lucide-svelte';
@@ -9,6 +10,7 @@
 	let prefix = $state('');
 	let generatedName = $state('');
 	let generatedId = $state('');
+	let generatedToken = $state('');
 	let loading = $state(false);
 	let error = $state('');
 	let step: 'input' | 'confirm' = $state('input');
@@ -35,6 +37,7 @@
 			const res = await createUsername(trimmed);
 			generatedName = res.username;
 			generatedId = res.user_id;
+			generatedToken = res.token;
 			step = 'confirm';
 		} catch (e: unknown) {
 			error = e instanceof Error ? e.message : 'Failed to generate username';
@@ -46,6 +49,8 @@
 	function confirm() {
 		userId.set(generatedId);
 		username.set(generatedName);
+		authToken.set(generatedToken);
+		setAuthToken(generatedToken);
 		persistSession(null);
 		goto('/lobby');
 	}
@@ -54,6 +59,7 @@
 		step = 'input';
 		generatedName = '';
 		generatedId = '';
+		generatedToken = '';
 	}
 
 	function onKeydown(e: KeyboardEvent) {

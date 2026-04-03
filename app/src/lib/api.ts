@@ -1,8 +1,9 @@
 /** REST API client for the Saloon server. */
 
-import type { ChannelInfo, UsernameResponse } from '$lib/types';
+import type { ChannelInfo, UsernameResponse, IceServersResponse } from '$lib/types';
 
 let _baseUrl = '';
+let _authToken = '';
 
 export function setBaseUrl(url: string) {
 	_baseUrl = url.replace(/\/+$/, '');
@@ -12,13 +13,26 @@ export function getBaseUrl(): string {
 	return _baseUrl;
 }
 
+export function setAuthToken(token: string) {
+	_authToken = token;
+}
+
+export function getAuthToken(): string {
+	return _authToken;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+	const headers: Record<string, string> = {
+		'Content-Type': 'application/json',
+		...(init?.headers as Record<string, string>)
+	};
+	if (_authToken) {
+		headers['Authorization'] = `Bearer ${_authToken}`;
+	}
+
 	const res = await fetch(`${_baseUrl}${path}`, {
 		...init,
-		headers: {
-			'Content-Type': 'application/json',
-			...init?.headers
-		}
+		headers
 	});
 
 	if (!res.ok) {
@@ -46,13 +60,12 @@ export async function createUsername(prefix: string): Promise<UsernameResponse> 
 	});
 }
 
-export async function checkUser(userId: string): Promise<boolean> {
-	try {
-		await request<{ valid: boolean }>(`/users/${encodeURIComponent(userId)}/check`);
-		return true;
-	} catch {
-		return false;
-	}
+export async function checkUser(): Promise<{ valid: boolean; user_id: string; username: string }> {
+	return request<{ valid: boolean; user_id: string; username: string }>('/users/check');
+}
+
+export async function getIceServers(): Promise<IceServersResponse> {
+	return request<IceServersResponse>('/ice-servers');
 }
 
 export async function listChannels(): Promise<ChannelInfo[]> {
@@ -76,18 +89,17 @@ export async function createChannel(
 
 export async function joinChannel(
 	channelId: string,
-	userId: string,
 	password?: string
 ): Promise<ChannelInfo> {
 	return request<ChannelInfo>(`/channels/${encodeURIComponent(channelId)}/join`, {
 		method: 'POST',
-		body: JSON.stringify({ user_id: userId, password: password ?? null })
+		body: JSON.stringify({ password: password ?? null })
 	});
 }
 
-export async function leaveChannel(channelId: string, userId: string): Promise<void> {
+export async function leaveChannel(channelId: string): Promise<void> {
 	return request<void>(
-		`/channels/${encodeURIComponent(channelId)}/leave?user_id=${encodeURIComponent(userId)}`,
+		`/channels/${encodeURIComponent(channelId)}/leave`,
 		{ method: 'POST' }
 	);
 }

@@ -6,6 +6,22 @@ services:
     env_file: .env
     ports:
       - "${SALOON_PORT:-8000}:8000"
+    depends_on:
+      coturn:
+        condition: service_started
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+
+  coturn:
+    image: coturn/coturn:latest
+    ports:
+      - "3478:3478/udp"
+      - "3478:3478/tcp"
+      - "49152-49252:49152-49252/udp"   # relay range (small for local dev)
+    volumes:
+      - ./coturn/turnserver.conf:/etc/turnserver.conf:ro
     restart: unless-stopped
     read_only: true
     security_opt:

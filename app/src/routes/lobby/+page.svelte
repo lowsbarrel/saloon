@@ -2,7 +2,7 @@
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import { get } from 'svelte/store';
-	import { listChannels, createChannel, joinChannel } from '$lib/api';
+	import { getBaseUrl, getAuthToken, createChannel, joinChannel } from '$lib/api';
 	import {
 		channels,
 		currentChannel,
@@ -13,11 +13,10 @@
 	} from '$lib/stores';
 	import { clearSession } from '$lib/session';
 	import type { ChannelInfo } from '$lib/types';
-	import { Plus, Lock, Hash, Users, MicOff, Monitor, KeyRound, Loader2 } from 'lucide-svelte';
+	import { Plus, Lock, Hash, Users, MicOff, Monitor, KeyRound, Loader2, LogOut } from 'lucide-svelte';
 
 	let loading = $state(false);
 	let error = $state('');
-	let consecutiveFailures = 0;
 
 	// Create channel form
 	let showCreate = $state(false);
@@ -31,37 +30,81 @@
 	let joinPassword = $state('');
 
 	let channelList: ChannelInfo[] = $state([]);
-	let pollInterval: ReturnType<typeof setInterval>;
+
+	// Lobby WebSocket for real-time channel list updates
+	let lobbyWs: WebSocket | null = null;
+	let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+	let mounted = true;
 
 	onMount(() => {
 		if (!get(isConnected) || !get(userId)) {
 			goto('/');
 			return;
 		}
-		fetchChannels();
-		pollInterval = setInterval(fetchChannels, 3000);
+		connectLobbyWs();
 
-		return () => clearInterval(pollInterval);
+		return () => {
+			mounted = false;
+			if (reconnectTimer) clearTimeout(reconnectTimer);
+			if (lobbyWs) {
+				lobbyWs.onclose = null;
+				lobbyWs.close();
+				lobbyWs = null;
+			}
+		};
 	});
 
-	async function fetchChannels() {
-		try {
-			channelList = await listChannels();
-			channels.set(channelList);
-			consecutiveFailures = 0;
-		} catch {
-			consecutiveFailures++;
-			if (consecutiveFailures >= 3) {
-				clearInterval(pollInterval);
+	function logout() {
+		mounted = false;
+		if (reconnectTimer) clearTimeout(reconnectTimer);
+		if (lobbyWs) {
+			lobbyWs.onclose = null;
+			lobbyWs.close();
+			lobbyWs = null;
+		}
+		resetState();
+		goto('/');
+	}
+
+	function connectLobbyWs() {
+		if (!mounted) return;
+		const base = getBaseUrl().replace(/^http/, 'ws');
+		const token = getAuthToken();
+		const url = `${base}/ws/lobby?token=${encodeURIComponent(token)}`;
+
+		lobbyWs = new WebSocket(url);
+
+		lobbyWs.onmessage = (event) => {
+			try {
+				const msg = JSON.parse(event.data);
+				if (msg.type === 'channels' && Array.isArray(msg.payload)) {
+					channelList = msg.payload;
+					channels.set(msg.payload);
+				}
+			} catch {
+				// ignore malformed messages
+			}
+		};
+
+		lobbyWs.onerror = () => {};
+
+		lobbyWs.onclose = (ev) => {
+			lobbyWs = null;
+			if (ev.code === 4001) {
+				clearSession();
 				resetState();
 				goto('/');
+				return;
 			}
-		}
+			if (mounted) {
+				reconnectTimer = setTimeout(connectLobbyWs, 3000);
+			}
+		};
 	}
 
 	function handleAuthError(e: unknown): boolean {
 		const msg = e instanceof Error ? e.message : '';
-		if (msg === 'Unknown user') {
+		if (msg === 'Unknown user' || msg === 'Invalid or expired token') {
 			clearSession();
 			resetState();
 			goto('/');
@@ -72,8 +115,8 @@
 
 	async function handleCreate() {
 		if (!newName.trim()) return;
-		if (newIsPrivate && (!newPassword || newPassword.length < 4)) {
-			error = 'Password must be at least 4 characters';
+		if (newIsPrivate && (!newPassword || newPassword.length < 8)) {
+			error = 'Password must be at least 8 characters';
 			return;
 		}
 
@@ -81,7 +124,7 @@
 		error = '';
 		try {
 			const ch = await createChannel(newName.trim(), newIsPrivate, newPassword || undefined);
-			const joined = await joinChannel(ch.id, get(userId), newIsPrivate ? newPassword : undefined);
+			const joined = await joinChannel(ch.id, newIsPrivate ? newPassword : undefined);
 			currentChannel.set(joined);
 			goto(`/channel/${ch.id}`);
 		} catch (e: unknown) {
@@ -97,7 +140,7 @@
 		loading = true;
 		error = '';
 		try {
-			const joined = await joinChannel(ch.id, get(userId));
+			const joined = await joinChannel(ch.id);
 			currentChannel.set(joined);
 			goto(`/channel/${ch.id}`);
 		} catch (e: unknown) {
@@ -114,7 +157,7 @@
 		loading = true;
 		error = '';
 		try {
-			const joined = await joinChannel(joinId.trim(), get(userId), joinPassword);
+			const joined = await joinChannel(joinId.trim(), joinPassword);
 			currentChannel.set(joined);
 			goto(`/channel/${joinId.trim()}`);
 		} catch (e: unknown) {
@@ -142,6 +185,10 @@
 				<Plus size={14} />
 				New Channel
 			</button>
+			<button class="btn-ghost action-btn logout-btn" onclick={logout} title="Disconnect and change server">
+				<LogOut size={14} />
+				Logout
+			</button>
 		</div>
 	</header>
 
@@ -161,7 +208,7 @@
 					Private (password-protected)
 				</label>
 				{#if newIsPrivate}
-					<input type="password" placeholder="Password (min 4 chars)" bind:value={newPassword} />
+					<input type="password" placeholder="Password (min 8 chars)" bind:value={newPassword} />
 				{/if}
 				<button class="btn-primary action-btn" onclick={handleCreate} disabled={loading || !newName.trim()}>
 					{#if loading}
@@ -273,6 +320,14 @@
 	.header-actions {
 		display: flex;
 		gap: 8px;
+	}
+
+	.logout-btn {
+		color: var(--danger);
+	}
+
+	.logout-btn:hover {
+		background: color-mix(in srgb, var(--danger) 10%, transparent);
 	}
 
 	.action-btn {

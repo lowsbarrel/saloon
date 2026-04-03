@@ -36,3 +36,12 @@ class RateLimiter:
     def cleanup(self, key: str) -> None:
         """Remove all tracking data for a key."""
         self._calls.pop(key, None)
+
+    def gc(self) -> int:
+        """Purge all keys with no recent activity. Returns number removed."""
+        now = time.monotonic()
+        cutoff = now - self._window
+        stale = [k for k, ts in self._calls.items() if not ts or ts[-1] <= cutoff]
+        for k in stale:
+            del self._calls[k]
+        return len(stale)

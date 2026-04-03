@@ -5,14 +5,11 @@
  * and local volume control via Web Audio API gain nodes.
  */
 
-import type { PeerState } from '$lib/types';
+import type { PeerState, IceServerConfig } from '$lib/types';
 import type { SignalingClient } from '$lib/signaling';
 
-const RTC_CONFIG: RTCConfiguration = {
-	iceServers: [
-		{ urls: 'stun:stun.l.google.com:19302' },
-		{ urls: 'stun:stun1.l.google.com:19302' }
-	]
+const DEFAULT_RTC_CONFIG: RTCConfiguration = {
+	iceServers: []
 };
 
 export class PeerManager {
@@ -25,6 +22,8 @@ export class PeerManager {
 	private signaling: SignalingClient;
 	private userId: string;
 	private onPeersChanged: (peers: Map<string, PeerState>) => void;
+	private rtcConfig: RTCConfiguration = DEFAULT_RTC_CONFIG;
+	private _outputDeviceId: string = '';
 
 	constructor(
 		signaling: SignalingClient,
@@ -34,6 +33,11 @@ export class PeerManager {
 		this.signaling = signaling;
 		this.userId = userId;
 		this.onPeersChanged = onPeersChanged;
+	}
+
+	/** Configure ICE servers from the server-provided list. */
+	setIceServers(servers: IceServerConfig[]): void {
+		this.rtcConfig = { iceServers: servers.map((s) => ({ ...s })) };
 	}
 
 	async initLocalAudio(): Promise<MediaStream> {
@@ -46,6 +50,54 @@ export class PeerManager {
 			video: false
 		});
 		return this.localStream;
+	}
+
+	/** Switch the audio input device, replacing the track on all peer connections. */
+	async switchAudioInput(deviceId: string): Promise<void> {
+		const newStream = await navigator.mediaDevices.getUserMedia({
+			audio: {
+				deviceId: { exact: deviceId },
+				echoCancellation: true,
+				noiseSuppression: true,
+				autoGainControl: true
+			},
+			video: false
+		});
+
+		const newTrack = newStream.getAudioTracks()[0];
+		if (!newTrack) return;
+
+		// Preserve mute state
+		const wasMuted = this.localStream?.getAudioTracks()[0]?.enabled === false;
+		if (wasMuted) newTrack.enabled = false;
+
+		// Replace the track on every peer connection
+		for (const peer of this.peers.values()) {
+			if (peer.connection) {
+				const sender = peer.connection.getSenders().find((s) => s.track?.kind === 'audio');
+				if (sender) {
+					await sender.replaceTrack(newTrack);
+				}
+			}
+		}
+
+		// Stop old tracks and swap
+		if (this.localStream) {
+			for (const track of this.localStream.getAudioTracks()) {
+				track.stop();
+			}
+		}
+		this.localStream = newStream;
+	}
+
+	/** Switch the audio output device on all peer audio elements (where supported). */
+	async switchAudioOutput(deviceId: string): Promise<void> {
+		for (const audio of this.audioElements.values()) {
+			if (typeof audio.setSinkId === 'function') {
+				await audio.setSinkId(deviceId);
+			}
+		}
+		this._outputDeviceId = deviceId;
 	}
 
 	/** Store a peer's username for later use (when their offer arrives). */
@@ -69,7 +121,7 @@ export class PeerManager {
 			existing.connection.close();
 		}
 
-		const pc = new RTCPeerConnection(RTC_CONFIG);
+		const pc = new RTCPeerConnection(this.rtcConfig);
 		const peerState: PeerState = {
 			id: peerId,
 			username: peerUsername,
@@ -348,6 +400,9 @@ export class PeerManager {
 		audio.srcObject = peer.audioStream;
 		audio.volume = peer.volume;
 		audio.autoplay = true;
+		if (this._outputDeviceId && typeof audio.setSinkId === 'function') {
+			audio.setSinkId(this._outputDeviceId).catch(() => {});
+		}
 		audio.play().catch(() => {
 			// Autoplay blocked — will retry on user interaction
 		});
