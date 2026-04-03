@@ -4,16 +4,20 @@
 	import { get } from 'svelte/store';
 	import { setBaseUrl, setAuthToken, healthCheck, checkUser } from '$lib/api';
 	import { serverUrl, isConnected, userId, username, authToken, lastServerUrl } from '$lib/stores';
-	import { loadSession } from '$lib/session';
-	import { ArrowRight, Loader2 } from 'lucide-svelte';
+	import { loadSession, loadLastServer, saveLastServer } from '$lib/session';
+	import { ArrowRight, Loader2, TriangleAlert } from 'lucide-svelte';
 	import FlameKindling from 'lucide-svelte/icons/flame-kindling';
 
 	let url = $state('');
 	let loading = $state(false);
 	let error = $state('');
+	let httpWarning = $derived(
+		url.trim().toLowerCase().startsWith('http://') &&
+		!url.trim().match(/^https?:\/\/(localhost|127\.0\.0\.1)(:|\/)*/i)
+	);
 
 	onMount(async () => {
-		const saved = get(lastServerUrl);
+		const saved = get(lastServerUrl) || loadLastServer();
 		const session = loadSession();
 
 		if (saved) {
@@ -66,6 +70,7 @@
 			}
 			serverUrl.set(trimmed);
 			isConnected.set(true);
+			saveLastServer(trimmed);
 			goto('/username');
 		} catch {
 			error = 'Could not connect to server';
@@ -101,6 +106,12 @@
 					<ArrowRight size={16} />
 				{/if}
 			</button>
+			{#if httpWarning}
+				<p class="http-warning">
+					<TriangleAlert size={13} />
+					Insecure connection — your traffic won't be encrypted. Use <strong>https://</strong> for remote servers.
+				</p>
+			{/if}
 		</div>
 
 		{#if error}
@@ -172,6 +183,20 @@
 		color: var(--danger);
 		margin-top: 16px;
 		font-size: 0.8rem;
+	}
+
+	.http-warning {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		font-size: 0.75rem;
+		color: var(--warning, #e0a800);
+		background: color-mix(in srgb, var(--warning, #e0a800) 8%, transparent);
+		border: 1px solid color-mix(in srgb, var(--warning, #e0a800) 20%, transparent);
+		border-radius: var(--radius-sm);
+		padding: 8px 12px;
+		text-align: left;
+		line-height: 1.5;
 	}
 
 	:global(.spin) {

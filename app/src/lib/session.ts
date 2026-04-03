@@ -42,3 +42,23 @@ export function clearSession(): void {
 		// ignore
 	}
 }
+
+// ── Persistent server URL (survives app restarts via localStorage) ────────
+
+const SERVER_KEY = 'saloon_last_server';
+
+export function saveLastServer(url: string): void {
+	try {
+		localStorage.setItem(SERVER_KEY, url);
+	} catch {
+		// ignore
+	}
+}
+
+export function loadLastServer(): string {
+	try {
+		return localStorage.getItem(SERVER_KEY) ?? '';
+	} catch {
+		return '';
+	}
+}

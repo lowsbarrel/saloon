@@ -41,6 +41,9 @@ export class PeerManager {
 	}
 
 	async initLocalAudio(): Promise<MediaStream> {
+		if (!navigator.mediaDevices?.getUserMedia) {
+			throw new Error('Microphone access is not available. Check app permissions in System Settings → Privacy & Security → Microphone.');
+		}
 		this.localStream = await navigator.mediaDevices.getUserMedia({
 			audio: {
 				echoCancellation: true,

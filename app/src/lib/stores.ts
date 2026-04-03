@@ -4,7 +4,7 @@ import { writable, derived } from 'svelte/store';
 import type { ChannelInfo, ChatMessage, PeerState } from '$lib/types';
 import { SignalingClient } from '$lib/signaling';
 import { PeerManager } from '$lib/webrtc';
-import { saveSession, clearSession } from '$lib/session';
+import { saveSession, clearSession, saveLastServer } from '$lib/session';
 
 // ── Connection ────────────────────────────────────────────────────────────
 
@@ -79,7 +79,10 @@ export function resetState(): void {
 	// Preserve the server URL so the connect page can pre-fill it
 	let url = '';
 	serverUrl.subscribe((v) => (url = v))();
-	if (url) lastServerUrl.set(url);
+	if (url) {
+		lastServerUrl.set(url);
+		saveLastServer(url);
+	}
 
 	destroyPeerManager();
 	signalingClient.disconnect();
