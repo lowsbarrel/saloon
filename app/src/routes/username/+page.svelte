@@ -2,7 +2,9 @@
 	import { goto } from '$app/navigation';
 	import { createUsername } from '$lib/api';
 	import { setAuthToken } from '$lib/api';
-	import { userId, username, isConnected, authToken, persistSession } from '$lib/stores';
+	import { userId, username, isConnected, authToken } from '$lib/stores';
+	import { persistSession } from '$lib/persistence';
+	import { ErrorMsg, errorMessage } from '$lib/errors';
 	import { get } from 'svelte/store';
 	import { onMount } from 'svelte';
 	import { RefreshCw, Check, Loader2, User } from 'lucide-svelte';
@@ -22,11 +24,11 @@
 	async function generate() {
 		const trimmed = prefix.trim().toLowerCase();
 		if (trimmed.length < 3 || trimmed.length > 16) {
-			error = 'Prefix must be 3–16 lowercase alphanumeric characters';
+			error = ErrorMsg.PREFIX_FORMAT;
 			return;
 		}
 		if (!/^[a-z0-9]+$/.test(trimmed)) {
-			error = 'Only lowercase letters and numbers allowed';
+			error = ErrorMsg.PREFIX_CHARS;
 			return;
 		}
 
@@ -40,7 +42,7 @@
 			generatedToken = res.token;
 			step = 'confirm';
 		} catch (e: unknown) {
-			error = e instanceof Error ? e.message : 'Failed to generate username';
+			error = errorMessage(e, ErrorMsg.USERNAME_GENERATE);
 		} finally {
 			loading = false;
 		}

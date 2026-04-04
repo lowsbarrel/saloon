@@ -1,10 +1,10 @@
 /** Global application state stores. */
 
-import { writable, derived } from 'svelte/store';
+import { writable, derived, get } from 'svelte/store';
 import type { ChannelInfo, ChatMessage, PeerState } from '$lib/types';
 import { SignalingClient } from '$lib/signaling';
-import { PeerManager } from '$lib/webrtc';
-import { saveSession, clearSession, saveLastServer } from '$lib/session';
+import { PeerManager } from '$lib/webrtc/peer-manager';
+import { clearSession, saveLastServer } from '$lib/session';
 
 // ── Connection ────────────────────────────────────────────────────────────
 
@@ -62,24 +62,9 @@ export function destroyPeerManager(): void {
 
 export const peerList = derived(peers, ($peers) => Array.from($peers.values()));
 
-/** Save current session state to sessionStorage. */
-export function persistSession(channelId: string | null = null): void {
-	let url = '', uid = '', uname = '', tok = '';
-	serverUrl.subscribe((v) => (url = v))();
-	userId.subscribe((v) => (uid = v))();
-	username.subscribe((v) => (uname = v))();
-	authToken.subscribe((v) => (tok = v))();
-
-	if (url && uid && uname && tok) {
-		saveSession({ serverUrl: url, userId: uid, username: uname, token: tok, channelId });
-	}
-}
-
 /** Reset all state (disconnect). */
 export function resetState(): void {
-	// Preserve the server URL so the connect page can pre-fill it
-	let url = '';
-	serverUrl.subscribe((v) => (url = v))();
+	const url = get(serverUrl);
 	if (url) {
 		lastServerUrl.set(url);
 		saveLastServer(url);

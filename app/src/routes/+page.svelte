@@ -5,6 +5,7 @@
 	import { setBaseUrl, setAuthToken, healthCheck, checkUser } from '$lib/api';
 	import { serverUrl, isConnected, userId, username, authToken, lastServerUrl } from '$lib/stores';
 	import { loadSession, loadLastServer, saveLastServer } from '$lib/session';
+	import { ErrorMsg } from '$lib/errors';
 	import { ArrowRight, Loader2, TriangleAlert } from 'lucide-svelte';
 	import FlameKindling from 'lucide-svelte/icons/flame-kindling';
 
@@ -43,10 +44,9 @@
 						return;
 					}
 				} catch {
-					error = 'Session expired. Please reconnect.';
+					error = ErrorMsg.SESSION_EXPIRED;
 				}
 			}
-			// Reset token if session restore failed
 			setAuthToken('');
 		}
 	});
@@ -54,7 +54,7 @@
 	async function connect() {
 		const trimmed = url.trim().replace(/\/+$/, '');
 		if (!trimmed) {
-			error = 'Enter a server URL';
+			error = ErrorMsg.URL_REQUIRED;
 			return;
 		}
 
@@ -65,7 +65,7 @@
 			setBaseUrl(trimmed);
 			const ok = await healthCheck();
 			if (!ok) {
-				error = 'Server unreachable';
+				error = ErrorMsg.SERVER_UNREACHABLE;
 				return;
 			}
 			serverUrl.set(trimmed);
@@ -73,7 +73,7 @@
 			saveLastServer(trimmed);
 			goto('/username');
 		} catch {
-			error = 'Could not connect to server';
+			error = ErrorMsg.CONNECT_FAILED;
 		} finally {
 			loading = false;
 		}

@@ -3,24 +3,25 @@
 	import { goto } from '$app/navigation';
 	import { onMount, onDestroy } from 'svelte';
 	import { get } from 'svelte/store';
-	import { leaveChannel, getIceServers } from '$lib/api';
+	import { leaveChannel } from '$lib/api';
 	import {
 		userId,
 		username,
 		currentChannel,
 		isConnected,
 		signalingClient,
-		createPeerManager,
 		destroyPeerManager,
 		getPeerManager,
-		peerList,
 		isMuted,
 		isSharingScreen,
 		isCameraOn,
 		chatMessages,
-		persistSession,
 		resetState
 	} from '$lib/stores';
+	import { persistSession } from '$lib/persistence';
+	import { setupChannel, subscribeChannelStores } from '$lib/channel-setup';
+	import { enumerateDevices } from '$lib/webrtc/media-devices';
+	import { ErrorMsg, errorMessage } from '$lib/errors';
 	import type { ChatMessage, PeerState, WSMessage } from '$lib/types';
 	import {
 		Mic,
@@ -50,15 +51,12 @@
 	let localCameraStream: MediaStream | null = $state(null);
 	let error = $state('');
 
-	// Track which peer's stream is fullscreen, and whether it's a camera or screen (null = grid view)
 	let fullscreenPeerId: string | null = $state(null);
 	let fullscreenType: 'screen' | 'camera' = $state('screen');
-	// Chat panel open
 	let chatOpen = $state(true);
-	// Flag to prevent error handler from wiping state on intentional leave
 	let intentionalLeave = false;
 
-	// Audio device selection
+	// Device selection
 	let showDevicePicker = $state(false);
 	let audioInputDevices: MediaDeviceInfo[] = $state([]);
 	let audioOutputDevices: MediaDeviceInfo[] = $state([]);
@@ -67,15 +65,11 @@
 	let selectedOutputId = $state('');
 	let selectedVideoId = $state('');
 
-	const MAX_CHAT_MESSAGES = 500;
-
 	const unsubs: (() => void)[] = [];
 
-	// Derived: peers who are sharing screens
+	// Derived
 	let screenSharers = $derived(peerArray.filter((p) => p.is_sharing_screen && p.screenStream));
-	// Derived: peers who have camera on
 	let cameraUsers = $derived(peerArray.filter((p) => p.is_camera_on && p.videoStream));
-	// Total video feeds (screen shares + cameras + local camera)
 	let hasVideoFeeds = $derived(screenSharers.length > 0 || cameraUsers.length > 0 || cameraOn);
 
 	onMount(async () => {
@@ -87,168 +81,38 @@
 		const uid = get(userId);
 
 		try {
-			const pm = createPeerManager(uid);
-
-			// Fetch ICE servers (includes TURN if configured)
-			try {
-				const iceConfig = await getIceServers();
-				pm.setIceServers(iceConfig.ice_servers);
-			} catch {
-				// Fall back to default STUN-only config
-			}
-
-			await pm.initLocalAudio();
-
-			unsubs.push(peerList.subscribe((v) => (peerArray = v)));
-			unsubs.push(chatMessages.subscribe((v) => (messages = v)));
-			unsubs.push(isMuted.subscribe((v) => (muted = v)));
-			unsubs.push(isSharingScreen.subscribe((v) => (sharing = v)));
-			unsubs.push(isCameraOn.subscribe((v) => (cameraOn = v)));
-
-			unsubs.push(
-				signalingClient.on('peer_list', (msg: WSMessage) => {
-					const list = (msg.payload as unknown) as Array<{
-						id: string;
-						username: string;
-						is_muted: boolean;
-						is_sharing_screen: boolean;
-						is_camera_on: boolean;
-					}>;
-					if (!Array.isArray(list)) return;
-					for (const p of list) {
-						pm.createPeerConnection(p.id, p.username, true);
-						pm.updatePeerState(p.id, {
-							is_muted: p.is_muted,
-							is_sharing_screen: p.is_sharing_screen,
-							is_camera_on: p.is_camera_on ?? false
-						});
-					}
-				})
-			);
-
-			unsubs.push(
-				signalingClient.on('peer_joined', (msg: WSMessage) => {
-					const payload = msg.payload as { username: string } | undefined;
-					if (msg.sender_id && payload?.username) {
-						pm.registerPeer(msg.sender_id, payload.username);
-					}
-				})
-			);
-
-			unsubs.push(
-				signalingClient.on('peer_left', (msg: WSMessage) => {
-					if (msg.sender_id) {
-						pm.removePeer(msg.sender_id);
-						if (fullscreenPeerId === msg.sender_id) fullscreenPeerId = null;
-					}
-				})
-			);
-
-			unsubs.push(
-				signalingClient.on('offer', async (msg: WSMessage) => {
-					if (msg.sender_id && msg.payload && typeof msg.payload === 'object') {
-						await pm.handleOffer(
-							msg.sender_id,
-							msg.sender_id,
-							msg.payload as Record<string, unknown>
-						);
-					}
-				})
-			);
-
-			unsubs.push(
-				signalingClient.on('answer', async (msg: WSMessage) => {
-					if (msg.sender_id && msg.payload && typeof msg.payload === 'object') {
-						await pm.handleAnswer(
-							msg.sender_id,
-							msg.payload as Record<string, unknown>
-						);
-					}
-				})
-			);
-
-			unsubs.push(
-				signalingClient.on('ice_candidate', async (msg: WSMessage) => {
-					if (msg.sender_id && msg.payload && typeof msg.payload === 'object') {
-						await pm.handleIceCandidate(
-							msg.sender_id,
-							msg.payload as Record<string, unknown>
-						);
-					}
-				})
-			);
-
-			unsubs.push(
-				signalingClient.on('chat_message', (msg: WSMessage) => {
-					const payload = msg.payload as { content: string; username: string } | undefined;
-					if (msg.sender_id && payload?.content) {
-						chatMessages.update((msgs) => {
-							const next = [
-								...msgs,
-								{
-									sender_id: msg.sender_id!,
-									username: payload.username ?? 'unknown',
-									content: payload.content,
-									timestamp: Date.now()
-								}
-							];
-							return next.length > MAX_CHAT_MESSAGES ? next.slice(-MAX_CHAT_MESSAGES) : next;
-						});
-						requestAnimationFrame(() => {
-							if (chatContainer) {
-								chatContainer.scrollTop = chatContainer.scrollHeight;
-							}
-						});
-					}
-				})
-			);
-
-			unsubs.push(
-				signalingClient.on('mute_state', (msg: WSMessage) => {
-					const payload = msg.payload as { is_muted: boolean } | undefined;
-					if (msg.sender_id && payload !== undefined) {
-						pm.updatePeerState(msg.sender_id, { is_muted: payload.is_muted });
-					}
-				})
-			);
-
-			unsubs.push(
-				signalingClient.on('screen_share_state', (msg: WSMessage) => {
-					const payload = msg.payload as { is_sharing_screen: boolean } | undefined;
-					if (msg.sender_id && payload !== undefined) {
-						pm.updatePeerState(msg.sender_id, {
-							is_sharing_screen: payload.is_sharing_screen
-						});
-					}
-				})
-			);
-
-			unsubs.push(
-				signalingClient.on('camera_state', (msg: WSMessage) => {
-					const payload = msg.payload as { is_camera_on: boolean } | undefined;
-					if (msg.sender_id && payload !== undefined) {
-						pm.updatePeerState(msg.sender_id, {
-							is_camera_on: payload.is_camera_on
-						});
-					}
-				})
-			);
-
-			unsubs.push(
-				signalingClient.on('error', (msg: WSMessage) => {
-					const payload = msg.payload as { message?: string } | undefined;
-					if (payload?.message === 'Connection closed' && !intentionalLeave) {
+			const { pm, unsubs: signalUnsubs } = await setupChannel(channelId, uid, {
+				onPeerLeft(peerId) {
+					if (fullscreenPeerId === peerId) fullscreenPeerId = null;
+				},
+				onChatMessage() {
+					requestAnimationFrame(() => {
+						if (chatContainer) chatContainer.scrollTop = chatContainer.scrollHeight;
+					});
+				},
+				onConnectionClosed() {
+					if (!intentionalLeave) {
 						resetState();
 						goto('/');
 					}
-				})
+				},
+			});
+
+			unsubs.push(...signalUnsubs);
+			unsubs.push(
+				...subscribeChannelStores({
+					setPeerArray: (v) => (peerArray = v),
+					setMessages: (v) => (messages = v),
+					setMuted: (v) => (muted = v),
+					setSharing: (v) => (sharing = v),
+					setCameraOn: (v) => (cameraOn = v),
+				}),
 			);
 
-			await signalingClient.connect(channelId);
 			persistSession(channelId);
 			navigator.mediaDevices.addEventListener('devicechange', onDeviceChange);
 		} catch (e: unknown) {
-			error = e instanceof Error ? e.message : 'Failed to join channel';
+			error = errorMessage(e, ErrorMsg.CHANNEL_JOIN_INIT);
 		}
 	});
 
@@ -263,18 +127,9 @@
 
 	function leave() {
 		intentionalLeave = true;
-		// Unsubscribe all signaling handlers immediately so no queued
-		// onclose/error event can call resetState() after we navigate.
 		for (const unsub of unsubs) unsub();
 		unsubs.length = 0;
-		// Fast path: signal leave over the already-open WebSocket. The server
-		// notifies remaining peers inline — no HTTP round-trip needed.
-		// send() is synchronous (buffers into the socket); the message is
-		// guaranteed to be flushed before the Close frame that disconnect() sends.
 		signalingClient.send({ type: 'leave' });
-		// Fallback: fire-and-forget REST call in case the WS message was lost
-		// (e.g. socket was already closing). Also acts as a belt-and-suspenders
-		// keep_alive guard so the user stays registered for the lobby.
 		leaveChannel(channelId).catch(() => {});
 		destroyPeerManager();
 		signalingClient.disconnect();
@@ -292,16 +147,14 @@
 
 	async function toggleDevicePicker() {
 		showDevicePicker = !showDevicePicker;
-		if (showDevicePicker) {
-			await refreshDeviceList();
-		}
+		if (showDevicePicker) await refreshDeviceList();
 	}
 
 	async function refreshDeviceList(): Promise<void> {
-		const devices = await navigator.mediaDevices.enumerateDevices();
-		audioInputDevices = devices.filter((d) => d.kind === 'audioinput');
-		audioOutputDevices = devices.filter((d) => d.kind === 'audiooutput');
-		videoInputDevices = devices.filter((d) => d.kind === 'videoinput');
+		const devices = await enumerateDevices();
+		audioInputDevices = devices.audioInput;
+		audioOutputDevices = devices.audioOutput;
+		videoInputDevices = devices.videoInput;
 	}
 
 	function onDeviceChange(): void {
@@ -319,7 +172,7 @@
 				await getPeerManager()?.switchAudioOutput(deviceId);
 			}
 		} catch {
-			error = kind === 'input' ? 'Failed to switch microphone' : 'Failed to switch speaker';
+			error = kind === 'input' ? ErrorMsg.MIC_SWITCH : ErrorMsg.SPEAKER_SWITCH;
 		}
 	}
 
@@ -354,7 +207,7 @@
 				localCameraStream = stream;
 				isCameraOn.set(true);
 			} catch {
-				error = 'Failed to start camera';
+				error = ErrorMsg.CAMERA_START;
 			}
 		}
 	}
@@ -368,7 +221,7 @@
 				localCameraStream = getPeerManager()?.getLocalCameraStream() ?? null;
 			}
 		} catch {
-			error = 'Failed to switch camera';
+			error = ErrorMsg.CAMERA_SWITCH;
 		}
 	}
 
@@ -418,7 +271,7 @@
 				...msgs,
 				{ sender_id: get(userId), username: get(username), content, timestamp: Date.now() }
 			];
-			return next.length > MAX_CHAT_MESSAGES ? next.slice(-MAX_CHAT_MESSAGES) : next;
+			return next.length > 500 ? next.slice(-500) : next;
 		});
 
 		chatInput = '';

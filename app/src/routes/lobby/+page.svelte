@@ -2,7 +2,7 @@
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import { get } from 'svelte/store';
-	import { getBaseUrl, getAuthToken, createChannel, joinChannel } from '$lib/api';
+	import { createChannel, joinChannel } from '$lib/api';
 	import {
 		channels,
 		currentChannel,
@@ -12,7 +12,8 @@
 		resetState
 	} from '$lib/stores';
 	import { clearSession } from '$lib/session';
-	import { handleAuthError } from '$lib/auth';
+	import { tryCatch, ErrorMsg } from '$lib/errors';
+	import { LobbyWsManager } from '$lib/lobby-ws';
 	import type { ChannelInfo } from '$lib/types';
 	import { Plus, Lock, Hash, Users, MicOff, Monitor, KeyRound, Loader2, LogOut, Search } from 'lucide-svelte';
 
@@ -36,129 +37,99 @@
 		)
 	);
 
-	let lobbyWs: WebSocket | null = null;
-	let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-	let mounted = true;
-
-	function closeLobbyWs(): void {
-		if (reconnectTimer) clearTimeout(reconnectTimer);
-		if (lobbyWs) {
-			lobbyWs.onclose = null;
-			lobbyWs.close();
-			lobbyWs = null;
-		}
-	}
+	let lobbyWs: LobbyWsManager | null = null;
 
 	onMount(() => {
 		if (!get(isConnected) || !get(userId)) {
 			goto('/');
 			return;
 		}
-		connectLobbyWs();
 
-		return () => {
-			mounted = false;
-			closeLobbyWs();
-		};
-	});
-
-	function logout(): void {
-		mounted = false;
-		closeLobbyWs();
-		resetState();
-		goto('/');
-	}
-
-	function connectLobbyWs(): void {
-		if (!mounted) return;
-		const base = getBaseUrl().replace(/^http/, 'ws');
-		const token = getAuthToken();
-		const url = `${base}/ws/lobby?token=${encodeURIComponent(token)}`;
-
-		lobbyWs = new WebSocket(url);
-
-		lobbyWs.onmessage = (event: MessageEvent) => {
-			try {
-				const msg = JSON.parse(event.data as string) as { type: string; payload: unknown };
+		lobbyWs = new LobbyWsManager({
+			onMessage(msg) {
 				if (msg.type === 'channels' && Array.isArray(msg.payload)) {
 					channelList = msg.payload as ChannelInfo[];
 					channels.set(msg.payload as ChannelInfo[]);
 				}
-			} catch {
-				// ignore malformed messages
-			}
-		};
-
-		lobbyWs.onerror = () => {};
-
-		lobbyWs.onclose = (ev: CloseEvent) => {
-			lobbyWs = null;
-			if (ev.code === 4001) {
+			},
+			onAuthError() {
 				clearSession();
 				resetState();
 				goto('/');
-				return;
 			}
-			if (mounted) {
-				reconnectTimer = setTimeout(connectLobbyWs, 3000);
-			}
+		});
+		lobbyWs.connect();
+
+		return () => {
+			lobbyWs?.disconnect();
 		};
+	});
+
+	function logout(): void {
+		lobbyWs?.disconnect();
+		resetState();
+		goto('/');
 	}
 
 	async function handleCreate(): Promise<void> {
 		if (!newName.trim()) return;
 		if (newIsPrivate && (!newPassword || newPassword.length < 8)) {
-			error = 'Password must be at least 8 characters';
+			error = ErrorMsg.PASSWORD_MIN;
 			return;
 		}
 
 		loading = true;
 		error = '';
-		try {
-			const ch = await createChannel(newName.trim(), newIsPrivate, newPassword || undefined);
-			const joined = await joinChannel(ch.id, newIsPrivate ? newPassword : undefined);
-			currentChannel.set(joined);
-			goto(`/channel/${ch.id}`);
-		} catch (e: unknown) {
-			if (!handleAuthError(e)) {
-				error = e instanceof Error ? e.message : 'Failed to create channel';
-			}
-		} finally {
-			loading = false;
+		const result = await tryCatch(
+			async () => {
+				const ch = await createChannel(newName.trim(), newIsPrivate, newPassword || undefined);
+				return joinChannel(ch.id, newIsPrivate ? newPassword : undefined);
+			},
+			ErrorMsg.CHANNEL_CREATE,
+			resetState,
+		);
+		if (result.error) {
+			error = result.error;
+		} else if (result.data) {
+			currentChannel.set(result.data);
+			goto(`/channel/${result.data.id}`);
 		}
+		loading = false;
 	}
 
 	async function handleJoinPublic(ch: ChannelInfo): Promise<void> {
 		loading = true;
 		error = '';
-		try {
-			const joined = await joinChannel(ch.id);
-			currentChannel.set(joined);
-			goto(`/channel/${ch.id}`);
-		} catch (e: unknown) {
-			if (!handleAuthError(e)) {
-				error = e instanceof Error ? e.message : 'Failed to join channel';
-			}
-		} finally {
-			loading = false;
+		const result = await tryCatch(
+			() => joinChannel(ch.id),
+			ErrorMsg.CHANNEL_JOIN,
+			resetState,
+		);
+		if (result.error) {
+			error = result.error;
+		} else if (result.data) {
+			currentChannel.set(result.data);
+			goto(`/channel/${result.data.id}`);
 		}
+		loading = false;
 	}
 
 	async function handleJoinPrivate(): Promise<void> {
 		if (!joinId.trim() || !joinPassword) return;
 		loading = true;
 		error = '';
-		try {
-			const joined = await joinChannel(joinId.trim(), joinPassword);
-			currentChannel.set(joined);
-			goto(`/channel/${joinId.trim()}`);
-		} catch (e: unknown) {
-			if (!handleAuthError(e)) {
-				error = e instanceof Error ? e.message : 'Failed to join channel';
-			}
-		} finally {
-			loading = false;
+		const result = await tryCatch(
+			() => joinChannel(joinId.trim(), joinPassword),
+			ErrorMsg.CHANNEL_JOIN,
+			resetState,
+		);
+		if (result.error) {
+			error = result.error;
+		} else if (result.data) {
+			currentChannel.set(result.data);
+			goto(`/channel/${result.data.id}`);
 		}
+		loading = false;
 	}
 </script>
 

@@ -2,6 +2,8 @@
 
 import type { ChannelInfo, UsernameResponse, IceServersResponse } from '$lib/types';
 
+const REQUEST_TIMEOUT_MS = 10_000;
+
 let _baseUrl = '';
 let _authToken = '';
 
@@ -30,18 +32,26 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 		headers['Authorization'] = `Bearer ${_authToken}`;
 	}
 
-	const res = await fetch(`${_baseUrl}${path}`, {
-		...init,
-		headers
-	});
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
-	if (!res.ok) {
-		const body = await res.json().catch(() => ({ detail: res.statusText }));
-		throw new Error(body.detail ?? `HTTP ${res.status}`);
+	try {
+		const res = await fetch(`${_baseUrl}${path}`, {
+			...init,
+			headers,
+			signal: controller.signal
+		});
+
+		if (!res.ok) {
+			const body = await res.json().catch(() => ({ detail: res.statusText }));
+			throw new Error(body.detail ?? `HTTP ${res.status}`);
+		}
+
+		if (res.status === 204) return undefined as T;
+		return res.json();
+	} finally {
+		clearTimeout(timeout);
 	}
-
-	if (res.status === 204) return undefined as T;
-	return res.json();
 }
 
 export async function healthCheck(): Promise<boolean> {
