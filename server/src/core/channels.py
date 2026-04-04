@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from .config import settings
 from .crypto import hash_password, verify_password
+from .exceptions import (
+    AlreadyInChannelError,
+    ChannelFullError,
+    ChannelLimitReachedError,
+    ChannelNotFoundError,
+    InvalidPasswordError,
+    PasswordRequiredError,
+)
 from .models import Channel, ChannelInfo, CreateChannelRequest, User
-
-if TYPE_CHECKING:
-    pass
 
 
 class ChannelStore:
@@ -19,9 +23,8 @@ class ChannelStore:
 
     def __init__(self) -> None:
         self._channels: dict[str, Channel] = {}
+        self._user_to_channel: dict[str, str] = {}
         self._lock = asyncio.Lock()
-
-    # ── Queries ────────────────────────────────────────────────────────
 
     async def list_public(self) -> list[ChannelInfo]:
         async with self._lock:
@@ -39,9 +42,7 @@ class ChannelStore:
         async with self._lock:
             return channel_id in self._channels
 
-    # ── Mutations ──────────────────────────────────────────────────────
-
-    async def create(self, req: CreateChannelRequest) -> ChannelInfo | str:
+    async def create(self, req: CreateChannelRequest) -> ChannelInfo:
         pw_hash = (
             hash_password(req.password) if req.is_private and req.password else None
         )
@@ -50,7 +51,7 @@ class ChannelStore:
         )
         async with self._lock:
             if len(self._channels) >= settings.max_channels:
-                return "Server channel limit reached"
+                raise ChannelLimitReachedError()
             self._channels[channel.id] = channel
         return channel.to_info()
 
@@ -59,29 +60,26 @@ class ChannelStore:
         channel_id: str,
         user: User,
         password: str | None = None,
-    ) -> ChannelInfo | str:
-        """Add user to channel. Returns ChannelInfo on success or error string."""
+    ) -> ChannelInfo:
+        """Add user to channel. Raises a domain exception on failure."""
         async with self._lock:
             channel = self._channels.get(channel_id)
             if channel is None:
-                return "Channel not found"
-
+                raise ChannelNotFoundError()
             if channel.is_private:
                 if password is None:
-                    return "Password required"
+                    raise PasswordRequiredError()
                 if channel.password_hash is None or not verify_password(
                     password, channel.password_hash
                 ):
-                    return "Invalid password"
-
+                    raise InvalidPasswordError()
             if user.id in channel.users:
-                return "Already in channel"
-
+                raise AlreadyInChannelError()
             if len(channel.users) >= settings.max_users_per_channel:
-                return "Channel is full"
-
+                raise ChannelFullError()
             user.peer_id = uuid4().hex[:16]
             channel.users[user.id] = user
+            self._user_to_channel[user.id] = channel_id
             return channel.to_info()
 
     async def leave(self, channel_id: str, user_id: str) -> bool:
@@ -93,11 +91,10 @@ class ChannelStore:
             channel = self._channels.get(channel_id)
             if channel is None:
                 return False
-
             user = channel.users.pop(user_id, None)
             if user:
                 user.peer_id = None
-
+            self._user_to_channel.pop(user_id, None)
             if len(channel.users) == 0:
                 del self._channels[channel_id]
                 return True
@@ -120,20 +117,13 @@ class ChannelStore:
             for cid in empty_channels:
                 del self._channels[cid]
                 deleted.append(cid)
+            self._user_to_channel.pop(user_id, None)
         return deleted
 
-    async def get_peers(self, channel_id: str, exclude_user_id: str) -> list[User]:
-        """Get all users in a channel except the given one."""
-        async with self._lock:
-            channel = self._channels.get(channel_id)
-            if channel is None:
-                return []
-            return [u for u in channel.users.values() if u.id != exclude_user_id]
-
     async def get_user_channel(self, user_id: str) -> Channel | None:
-        """Find which channel a user is in."""
+        """Find which channel a user is currently in. O(1) via reverse index."""
         async with self._lock:
-            for ch in self._channels.values():
-                if user_id in ch.users:
-                    return ch
-        return None
+            channel_id = self._user_to_channel.get(user_id)
+            if channel_id is None:
+                return None
+            return self._channels.get(channel_id)

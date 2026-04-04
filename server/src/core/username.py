@@ -4,19 +4,14 @@ from __future__ import annotations
 
 import secrets
 
-from .wordlists import VERBS, NOUNS
 from .config import settings
+from .wordlists import NOUNS, VERBS
 
 
 def generate_username(prefix: str, existing_usernames: set[str]) -> str | None:
-    """Generate a unique username.
-
-    Returns None if uniqueness cannot be achieved within retry limit.
-    """
+    """Generate a unique username, or return None if the retry limit is exceeded."""
     for _ in range(settings.username_max_retries):
-        verb = secrets.choice(VERBS)
-        noun = secrets.choice(NOUNS)
-        username = f"{prefix}{verb}{noun}"
+        username = f"{prefix}{secrets.choice(VERBS)}{secrets.choice(NOUNS)}"
         if username not in existing_usernames:
             return username
     return None

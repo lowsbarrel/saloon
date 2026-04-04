@@ -12,29 +12,42 @@
 		resetState
 	} from '$lib/stores';
 	import { clearSession } from '$lib/session';
+	import { handleAuthError } from '$lib/auth';
 	import type { ChannelInfo } from '$lib/types';
-	import { Plus, Lock, Hash, Users, MicOff, Monitor, KeyRound, Loader2, LogOut } from 'lucide-svelte';
+	import { Plus, Lock, Hash, Users, MicOff, Monitor, KeyRound, Loader2, LogOut, Search } from 'lucide-svelte';
 
 	let loading = $state(false);
 	let error = $state('');
 
-	// Create channel form
 	let showCreate = $state(false);
 	let newName = $state('');
 	let newIsPrivate = $state(false);
 	let newPassword = $state('');
 
-	// Join private channel
 	let showJoinPrivate = $state(false);
 	let joinId = $state('');
 	let joinPassword = $state('');
 
 	let channelList: ChannelInfo[] = $state([]);
+	let searchQuery = $state('');
+	let filteredChannels = $derived(
+		channelList.filter((ch) =>
+			ch.name.toLowerCase().includes(searchQuery.toLowerCase().trim())
+		)
+	);
 
-	// Lobby WebSocket for real-time channel list updates
 	let lobbyWs: WebSocket | null = null;
 	let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 	let mounted = true;
+
+	function closeLobbyWs(): void {
+		if (reconnectTimer) clearTimeout(reconnectTimer);
+		if (lobbyWs) {
+			lobbyWs.onclose = null;
+			lobbyWs.close();
+			lobbyWs = null;
+		}
+	}
 
 	onMount(() => {
 		if (!get(isConnected) || !get(userId)) {
@@ -45,28 +58,18 @@
 
 		return () => {
 			mounted = false;
-			if (reconnectTimer) clearTimeout(reconnectTimer);
-			if (lobbyWs) {
-				lobbyWs.onclose = null;
-				lobbyWs.close();
-				lobbyWs = null;
-			}
+			closeLobbyWs();
 		};
 	});
 
-	function logout() {
+	function logout(): void {
 		mounted = false;
-		if (reconnectTimer) clearTimeout(reconnectTimer);
-		if (lobbyWs) {
-			lobbyWs.onclose = null;
-			lobbyWs.close();
-			lobbyWs = null;
-		}
+		closeLobbyWs();
 		resetState();
 		goto('/');
 	}
 
-	function connectLobbyWs() {
+	function connectLobbyWs(): void {
 		if (!mounted) return;
 		const base = getBaseUrl().replace(/^http/, 'ws');
 		const token = getAuthToken();
@@ -74,12 +77,12 @@
 
 		lobbyWs = new WebSocket(url);
 
-		lobbyWs.onmessage = (event) => {
+		lobbyWs.onmessage = (event: MessageEvent) => {
 			try {
-				const msg = JSON.parse(event.data);
+				const msg = JSON.parse(event.data as string) as { type: string; payload: unknown };
 				if (msg.type === 'channels' && Array.isArray(msg.payload)) {
-					channelList = msg.payload;
-					channels.set(msg.payload);
+					channelList = msg.payload as ChannelInfo[];
+					channels.set(msg.payload as ChannelInfo[]);
 				}
 			} catch {
 				// ignore malformed messages
@@ -88,7 +91,7 @@
 
 		lobbyWs.onerror = () => {};
 
-		lobbyWs.onclose = (ev) => {
+		lobbyWs.onclose = (ev: CloseEvent) => {
 			lobbyWs = null;
 			if (ev.code === 4001) {
 				clearSession();
@@ -102,18 +105,7 @@
 		};
 	}
 
-	function handleAuthError(e: unknown): boolean {
-		const msg = e instanceof Error ? e.message : '';
-		if (msg === 'Unknown user' || msg === 'Invalid or expired token') {
-			clearSession();
-			resetState();
-			goto('/');
-			return true;
-		}
-		return false;
-	}
-
-	async function handleCreate() {
+	async function handleCreate(): Promise<void> {
 		if (!newName.trim()) return;
 		if (newIsPrivate && (!newPassword || newPassword.length < 8)) {
 			error = 'Password must be at least 8 characters';
@@ -136,7 +128,7 @@
 		}
 	}
 
-	async function handleJoinPublic(ch: ChannelInfo) {
+	async function handleJoinPublic(ch: ChannelInfo): Promise<void> {
 		loading = true;
 		error = '';
 		try {
@@ -152,7 +144,7 @@
 		}
 	}
 
-	async function handleJoinPrivate() {
+	async function handleJoinPrivate(): Promise<void> {
 		if (!joinId.trim() || !joinPassword) return;
 		loading = true;
 		error = '';
@@ -245,7 +237,14 @@
 		</div>
 	{/if}
 
-	<!-- Channel list -->
+	<!-- Search + Channel list -->
+	{#if channelList.length > 0}
+		<div class="search-bar">
+			<Search size={14} />
+			<input type="text" placeholder="Search channels…" bind:value={searchQuery} />
+		</div>
+	{/if}
+
 	<div class="channel-list">
 		{#if channelList.length === 0}
 			<div class="empty-state">
@@ -253,8 +252,13 @@
 				<p>No public channels yet</p>
 				<span>Create one to get started</span>
 			</div>
+		{:else if filteredChannels.length === 0}
+			<div class="empty-state">
+				<Search size={28} strokeWidth={1.5} />
+				<p>No channels match "{searchQuery}"</p>
+			</div>
 		{:else}
-			{#each channelList as ch (ch.id)}
+			{#each filteredChannels as ch (ch.id)}
 				<button class="channel-card" onclick={() => handleJoinPublic(ch)} disabled={loading}>
 					<div class="channel-info">
 						<div class="channel-name-row">
@@ -376,6 +380,31 @@
 
 	.checkbox input {
 		width: auto;
+	}
+
+	.search-bar {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		padding: 0 14px;
+		color: var(--text-muted);
+	}
+
+	.search-bar input {
+		flex: 1;
+		background: none;
+		border: none;
+		outline: none;
+		padding: 10px 0;
+		font-size: 0.85rem;
+		color: var(--text-primary);
+	}
+
+	.search-bar input::placeholder {
+		color: var(--text-muted);
 	}
 
 	.channel-list {

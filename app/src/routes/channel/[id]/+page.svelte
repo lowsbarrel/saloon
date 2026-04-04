@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { page } from '$app/stores';
+	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { onMount, onDestroy } from 'svelte';
 	import { get } from 'svelte/store';
@@ -13,10 +13,10 @@
 		createPeerManager,
 		destroyPeerManager,
 		getPeerManager,
-		peers,
 		peerList,
 		isMuted,
 		isSharingScreen,
+		isCameraOn,
 		chatMessages,
 		persistSession,
 		resetState
@@ -27,6 +27,8 @@
 		MicOff,
 		Monitor,
 		MonitorOff,
+		Video,
+		VideoOff,
 		LogOut,
 		Send,
 		Maximize2,
@@ -34,22 +36,23 @@
 		X,
 		MessageSquare,
 		Users,
-		ChevronRight,
-		ChevronDown,
 		Settings
 	} from 'lucide-svelte';
 
-	const channelId = $derived($page.params.id ?? '');
+	const channelId = page.params.id ?? '';
 	let chatInput = $state('');
 	let chatContainer: HTMLDivElement = $state(undefined!);
 	let messages: ChatMessage[] = $state([]);
 	let peerArray: PeerState[] = $state([]);
 	let muted = $state(false);
 	let sharing = $state(false);
+	let cameraOn = $state(false);
+	let localCameraStream: MediaStream | null = $state(null);
 	let error = $state('');
 
-	// Track which peer's screen is fullscreen (null = grid view)
+	// Track which peer's stream is fullscreen, and whether it's a camera or screen (null = grid view)
 	let fullscreenPeerId: string | null = $state(null);
+	let fullscreenType: 'screen' | 'camera' = $state('screen');
 	// Chat panel open
 	let chatOpen = $state(true);
 	// Flag to prevent error handler from wiping state on intentional leave
@@ -59,13 +62,21 @@
 	let showDevicePicker = $state(false);
 	let audioInputDevices: MediaDeviceInfo[] = $state([]);
 	let audioOutputDevices: MediaDeviceInfo[] = $state([]);
+	let videoInputDevices: MediaDeviceInfo[] = $state([]);
 	let selectedInputId = $state('');
 	let selectedOutputId = $state('');
+	let selectedVideoId = $state('');
+
+	const MAX_CHAT_MESSAGES = 500;
 
 	const unsubs: (() => void)[] = [];
 
 	// Derived: peers who are sharing screens
 	let screenSharers = $derived(peerArray.filter((p) => p.is_sharing_screen && p.screenStream));
+	// Derived: peers who have camera on
+	let cameraUsers = $derived(peerArray.filter((p) => p.is_camera_on && p.videoStream));
+	// Total video feeds (screen shares + cameras + local camera)
+	let hasVideoFeeds = $derived(screenSharers.length > 0 || cameraUsers.length > 0 || cameraOn);
 
 	onMount(async () => {
 		if (!get(isConnected) || !get(userId)) {
@@ -92,6 +103,7 @@
 			unsubs.push(chatMessages.subscribe((v) => (messages = v)));
 			unsubs.push(isMuted.subscribe((v) => (muted = v)));
 			unsubs.push(isSharingScreen.subscribe((v) => (sharing = v)));
+			unsubs.push(isCameraOn.subscribe((v) => (cameraOn = v)));
 
 			unsubs.push(
 				signalingClient.on('peer_list', (msg: WSMessage) => {
@@ -100,10 +112,16 @@
 						username: string;
 						is_muted: boolean;
 						is_sharing_screen: boolean;
+						is_camera_on: boolean;
 					}>;
 					if (!Array.isArray(list)) return;
 					for (const p of list) {
 						pm.createPeerConnection(p.id, p.username, true);
+						pm.updatePeerState(p.id, {
+							is_muted: p.is_muted,
+							is_sharing_screen: p.is_sharing_screen,
+							is_camera_on: p.is_camera_on ?? false
+						});
 					}
 				})
 			);
@@ -164,15 +182,18 @@
 				signalingClient.on('chat_message', (msg: WSMessage) => {
 					const payload = msg.payload as { content: string; username: string } | undefined;
 					if (msg.sender_id && payload?.content) {
-						chatMessages.update((msgs) => [
-							...msgs,
-							{
-								sender_id: msg.sender_id!,
-								username: payload.username ?? 'unknown',
-								content: payload.content,
-								timestamp: Date.now()
-							}
-						]);
+						chatMessages.update((msgs) => {
+							const next = [
+								...msgs,
+								{
+									sender_id: msg.sender_id!,
+									username: payload.username ?? 'unknown',
+									content: payload.content,
+									timestamp: Date.now()
+								}
+							];
+							return next.length > MAX_CHAT_MESSAGES ? next.slice(-MAX_CHAT_MESSAGES) : next;
+						});
 						requestAnimationFrame(() => {
 							if (chatContainer) {
 								chatContainer.scrollTop = chatContainer.scrollHeight;
@@ -203,6 +224,17 @@
 			);
 
 			unsubs.push(
+				signalingClient.on('camera_state', (msg: WSMessage) => {
+					const payload = msg.payload as { is_camera_on: boolean } | undefined;
+					if (msg.sender_id && payload !== undefined) {
+						pm.updatePeerState(msg.sender_id, {
+							is_camera_on: payload.is_camera_on
+						});
+					}
+				})
+			);
+
+			unsubs.push(
 				signalingClient.on('error', (msg: WSMessage) => {
 					const payload = msg.payload as { message?: string } | undefined;
 					if (payload?.message === 'Connection closed' && !intentionalLeave) {
@@ -214,6 +246,7 @@
 
 			await signalingClient.connect(channelId);
 			persistSession(channelId);
+			navigator.mediaDevices.addEventListener('devicechange', onDeviceChange);
 		} catch (e: unknown) {
 			error = e instanceof Error ? e.message : 'Failed to join channel';
 		}
@@ -221,6 +254,7 @@
 
 	onDestroy(() => {
 		intentionalLeave = true;
+		navigator.mediaDevices.removeEventListener('devicechange', onDeviceChange);
 		for (const unsub of unsubs) unsub();
 		unsubs.length = 0;
 		destroyPeerManager();
@@ -263,29 +297,29 @@
 		}
 	}
 
-	async function refreshDeviceList() {
+	async function refreshDeviceList(): Promise<void> {
 		const devices = await navigator.mediaDevices.enumerateDevices();
 		audioInputDevices = devices.filter((d) => d.kind === 'audioinput');
 		audioOutputDevices = devices.filter((d) => d.kind === 'audiooutput');
+		videoInputDevices = devices.filter((d) => d.kind === 'videoinput');
 	}
 
-	async function switchInput(e: Event) {
-		const deviceId = (e.target as HTMLSelectElement).value;
-		selectedInputId = deviceId;
-		try {
-			await getPeerManager()?.switchAudioInput(deviceId);
-		} catch {
-			error = 'Failed to switch microphone';
-		}
+	function onDeviceChange(): void {
+		refreshDeviceList().catch(() => {});
 	}
 
-	async function switchOutput(e: Event) {
+	async function switchAudioDevice(kind: 'input' | 'output', e: Event): Promise<void> {
 		const deviceId = (e.target as HTMLSelectElement).value;
-		selectedOutputId = deviceId;
 		try {
-			await getPeerManager()?.switchAudioOutput(deviceId);
+			if (kind === 'input') {
+				selectedInputId = deviceId;
+				await getPeerManager()?.switchAudioInput(deviceId);
+			} else {
+				selectedOutputId = deviceId;
+				await getPeerManager()?.switchAudioOutput(deviceId);
+			}
 		} catch {
-			error = 'Failed to switch speaker';
+			error = kind === 'input' ? 'Failed to switch microphone' : 'Failed to switch speaker';
 		}
 	}
 
@@ -306,51 +340,86 @@
 		}
 	}
 
-	function setVolume(peerId: string, e: Event) {
-		const input = e.target as HTMLInputElement;
-		getPeerManager()?.setVolume(peerId, parseFloat(input.value));
+	async function toggleCamera() {
+		const pm = getPeerManager();
+		if (!pm) return;
+
+		if (cameraOn) {
+			pm.stopCamera();
+			localCameraStream = null;
+			isCameraOn.set(false);
+		} else {
+			try {
+				const stream = await pm.startCamera(selectedVideoId || undefined);
+				localCameraStream = stream;
+				isCameraOn.set(true);
+			} catch {
+				error = 'Failed to start camera';
+			}
+		}
 	}
 
-	// Drag-to-volume on user cards
-	function startVolumeDrag(peerId: string, e: PointerEvent) {
-		const el = (e.currentTarget as HTMLElement);
-		el.setPointerCapture(e.pointerId);
-		updateVolFromPointer(peerId, el, e);
-
-		const onMove = (ev: PointerEvent) => updateVolFromPointer(peerId, el, ev);
-		const onUp = () => {
-			el.removeEventListener('pointermove', onMove);
-			el.removeEventListener('pointerup', onUp);
-		};
-		el.addEventListener('pointermove', onMove);
-		el.addEventListener('pointerup', onUp);
+	async function switchVideoDevice(e: Event): Promise<void> {
+		const deviceId = (e.target as HTMLSelectElement).value;
+		selectedVideoId = deviceId;
+		try {
+			if (cameraOn) {
+				await getPeerManager()?.switchVideoInput(deviceId);
+				localCameraStream = getPeerManager()?.getLocalCameraStream() ?? null;
+			}
+		} catch {
+			error = 'Failed to switch camera';
+		}
 	}
 
-	function updateVolFromPointer(peerId: string, el: HTMLElement, e: PointerEvent) {
-		const rect = el.getBoundingClientRect();
-		const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
-		const vol = Math.round((x / rect.width) * 20) / 20; // snap to 0.05
-		getPeerManager()?.setVolume(peerId, vol);
+	// ── Context menu volume slider ──────────────────────────
+	let ctxMenu: { x: number; y: number; peerId: string; kind: 'mic' | 'screen' } | null = $state(null);
+
+	function openVolumeMenu(peerId: string, kind: 'mic' | 'screen', e: MouseEvent) {
+		e.preventDefault();
+		ctxMenu = { x: e.clientX, y: e.clientY, peerId, kind };
 	}
 
-	function sendChat() {
+	function closeVolumeMenu() {
+		ctxMenu = null;
+	}
+
+	function onCtxSliderInput(e: Event) {
+		if (!ctxMenu) return;
+		const val = parseFloat((e.target as HTMLInputElement).value) / 100;
+		if (ctxMenu.kind === 'mic') {
+			getPeerManager()?.setVolume(ctxMenu.peerId, val);
+		} else {
+			getPeerManager()?.setScreenVolume(ctxMenu.peerId, val);
+		}
+	}
+
+	function getCtxVolume(): number {
+		if (!ctxMenu) return 100;
+		const peer = peerArray.find((p) => p.id === ctxMenu!.peerId);
+		if (!peer) return 100;
+		return Math.round((ctxMenu.kind === 'mic' ? peer.volume : peer.screenVolume) * 100);
+	}
+
+	function getCtxUsername(): string {
+		if (!ctxMenu) return '';
+		const peer = peerArray.find((p) => p.id === ctxMenu!.peerId);
+		return peer?.username ?? '';
+	}
+
+	function sendChat(): void {
 		const content = chatInput.trim();
 		if (!content || content.length > 2000) return;
 
-		signalingClient.send({
-			type: 'chat_message',
-			payload: { content }
-		});
+		signalingClient.send({ type: 'chat_message', payload: { content } });
 
-		chatMessages.update((msgs) => [
-			...msgs,
-			{
-				sender_id: get(userId),
-				username: get(username),
-				content,
-				timestamp: Date.now()
-			}
-		]);
+		chatMessages.update((msgs) => {
+			const next = [
+				...msgs,
+				{ sender_id: get(userId), username: get(username), content, timestamp: Date.now() }
+			];
+			return next.length > MAX_CHAT_MESSAGES ? next.slice(-MAX_CHAT_MESSAGES) : next;
+		});
 
 		chatInput = '';
 		requestAnimationFrame(() => {
@@ -419,38 +488,32 @@
 							{#if sharing}
 								<span class="badge sharing"><Monitor size={10} /></span>
 							{/if}
+							{#if cameraOn}
+								<span class="badge sharing"><Video size={10} /></span>
+							{/if}
 						</div>
 					</div>
 
 					<!-- Peers -->
 					{#each peerArray as peer (peer.id)}
+						<!-- svelte-ignore a11y_no_static_element_interactions -->
 						<div
-							class="user-item peer-volume"
-							onpointerdown={(e) => startVolumeDrag(peer.id, e)}
-							style="--vol: {peer.volume}"
-							role="slider"
-							aria-label="Volume for {peer.username}"
-							aria-valuenow={Math.round(peer.volume * 100)}
-							aria-valuemin={0}
-							aria-valuemax={100}
-							tabindex={0}
+							class="user-item"
+							oncontextmenu={(e) => openVolumeMenu(peer.id, 'mic', e)}
 						>
-							<div class="vol-fill"></div>
-							<div class="user-row">
-								<div class="user-info">
-									<span class="user-name">{peer.username}</span>
-								</div>
-								<div class="user-right">
-									<div class="user-badges">
-										{#if peer.is_muted}
-											<span class="badge muted"><MicOff size={10} /></span>
-										{/if}
-										{#if peer.is_sharing_screen}
-											<span class="badge sharing"><Monitor size={10} /></span>
-										{/if}
-									</div>
-									<span class="vol-pct">{Math.round(peer.volume * 100)}%</span>
-								</div>
+							<div class="user-info">
+								<span class="user-name">{peer.username}</span>
+							</div>
+							<div class="user-badges">
+								{#if peer.is_muted}
+									<span class="badge muted"><MicOff size={10} /></span>
+								{/if}
+								{#if peer.is_sharing_screen}
+									<span class="badge sharing"><Monitor size={10} /></span>
+								{/if}
+								{#if peer.is_camera_on}
+									<span class="badge sharing"><Video size={10} /></span>
+								{/if}
 							</div>
 						</div>
 					{/each}
@@ -458,14 +521,14 @@
 			</div>
 		</aside>
 
-		<!-- Center: screen share grid / empty state -->
+		<!-- Center: video grid / empty state -->
 		<main class="center-area">
 			{#if fullscreenPeerId}
-				<!-- Fullscreen single screen share -->
-				{@const fsPeer = screenSharers.find((p) => p.id === fullscreenPeerId)}
+				{@const fsPeer = peerArray.find((p) => p.id === fullscreenPeerId)}
+				{@const fsStream = fullscreenType === 'camera' ? fsPeer?.videoStream : fsPeer?.screenStream}
 				<div class="fullscreen-view">
-					{#if fsPeer?.screenStream}
-						<video use:bindScreenStream={fsPeer.screenStream} autoplay playsinline></video>
+					{#if fsStream}
+						<video use:bindScreenStream={fsStream} autoplay playsinline></video>
 					{:else}
 						<p class="waiting-text">Waiting for stream…</p>
 					{/if}
@@ -476,17 +539,43 @@
 						</button>
 					</div>
 				</div>
-			{:else if screenSharers.length > 0}
-				<!-- Grid of screen shares -->
-				<div class="screen-grid" style="--cols: {gridCols(screenSharers.length)}">
+			{:else if hasVideoFeeds}
+				{@const totalFeeds = screenSharers.length + cameraUsers.length + (cameraOn ? 1 : 0)}
+				<div class="screen-grid" style="--cols: {gridCols(totalFeeds)}">
+					<!-- Screen shares -->
 					{#each screenSharers as peer (peer.id)}
-						<div class="screen-tile">
+						<!-- svelte-ignore a11y_no_static_element_interactions -->
+						<div class="screen-tile" oncontextmenu={(e) => openVolumeMenu(peer.id, 'screen', e)}>
 							{#if peer.screenStream}
 								<video use:bindScreenStream={peer.screenStream} autoplay playsinline></video>
 							{/if}
 							<div class="tile-overlay">
+								<span class="tile-label">{peer.username} <Monitor size={10} /></span>
+								<button class="overlay-btn" onclick={() => { fullscreenPeerId = peer.id; fullscreenType = 'screen'; }}>
+									<Maximize2 size={12} />
+								</button>
+							</div>
+						</div>
+					{/each}
+					<!-- Local camera -->
+					{#if cameraOn && localCameraStream}
+						<div class="screen-tile">
+							<video use:bindScreenStream={localCameraStream} autoplay playsinline muted></video>
+							<div class="tile-overlay">
+								<span class="tile-label">{$username} (you)</span>
+							</div>
+						</div>
+					{/if}
+					<!-- Peer cameras -->
+					{#each cameraUsers as peer (peer.id + '-cam')}
+						<!-- svelte-ignore a11y_no_static_element_interactions -->
+						<div class="screen-tile" oncontextmenu={(e) => openVolumeMenu(peer.id, 'mic', e)}>
+							{#if peer.videoStream}
+								<video use:bindScreenStream={peer.videoStream} autoplay playsinline></video>
+							{/if}
+							<div class="tile-overlay">
 								<span class="tile-label">{peer.username}</span>
-								<button class="overlay-btn" onclick={() => (fullscreenPeerId = peer.id)}>
+								<button class="overlay-btn" onclick={() => { fullscreenPeerId = peer.id; fullscreenType = 'camera'; }}>
 									<Maximize2 size={12} />
 								</button>
 							</div>
@@ -494,11 +583,10 @@
 					{/each}
 				</div>
 			{:else}
-				<!-- No screen shares -->
 				<div class="empty-center">
-					<Monitor size={36} strokeWidth={1} />
-					<p>No active screen shares</p>
-					<span>Share your screen or wait for others</span>
+					<Video size={36} strokeWidth={1} />
+					<p>No active video feeds</p>
+					<span>Turn on your camera, share your screen, or wait for others</span>
 				</div>
 			{/if}
 		</main>
@@ -561,13 +649,20 @@
 					<Monitor size={18} />
 				{/if}
 			</button>
+			<button class="ctrl-btn" class:active={cameraOn} onclick={toggleCamera} title={cameraOn ? 'Turn off camera' : 'Turn on camera'}>
+				{#if cameraOn}
+					<Video size={18} />
+				{:else}
+					<VideoOff size={18} />
+				{/if}
+			</button>
 			{#if !chatOpen}
 				<button class="ctrl-btn" onclick={() => (chatOpen = true)} title="Open chat">
 					<MessageSquare size={18} />
 				</button>
 			{/if}
 			<div class="device-picker-wrap">
-				<button class="ctrl-btn" class:active={showDevicePicker} onclick={toggleDevicePicker} title="Audio devices">
+				<button class="ctrl-btn" class:active={showDevicePicker} onclick={toggleDevicePicker} title="Devices">
 					<Settings size={18} />
 				</button>
 				{#if showDevicePicker}
@@ -575,7 +670,7 @@
 						<div class="device-group">
 							<!-- svelte-ignore a11y_label_has_associated_control -->
 							<label class="device-label">Microphone</label>
-							<select class="device-select" value={selectedInputId} onchange={switchInput}>
+							<select class="device-select" value={selectedInputId} onchange={(e) => switchAudioDevice('input', e)}>
 								{#each audioInputDevices as dev (dev.deviceId)}
 									<option value={dev.deviceId}>{dev.label || 'Microphone'}</option>
 								{/each}
@@ -584,9 +679,18 @@
 						<div class="device-group">
 							<!-- svelte-ignore a11y_label_has_associated_control -->
 							<label class="device-label">Speaker</label>
-							<select class="device-select" value={selectedOutputId} onchange={switchOutput}>
+							<select class="device-select" value={selectedOutputId} onchange={(e) => switchAudioDevice('output', e)}>
 								{#each audioOutputDevices as dev (dev.deviceId)}
 									<option value={dev.deviceId}>{dev.label || 'Speaker'}</option>
+								{/each}
+							</select>
+						</div>
+						<div class="device-group">
+							<!-- svelte-ignore a11y_label_has_associated_control -->
+							<label class="device-label">Camera</label>
+							<select class="device-select" value={selectedVideoId} onchange={switchVideoDevice}>
+								{#each videoInputDevices as dev (dev.deviceId)}
+									<option value={dev.deviceId}>{dev.label || 'Camera'}</option>
 								{/each}
 							</select>
 						</div>
@@ -600,6 +704,28 @@
 		</div>
 	</footer>
 </div>
+
+<!-- Volume context menu (rendered outside channel-page to avoid overflow clipping) -->
+{#if ctxMenu}
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<!-- svelte-ignore a11y_click_events_have_key_events -->
+	<div class="ctx-backdrop" onclick={closeVolumeMenu} oncontextmenu={(e) => { e.preventDefault(); closeVolumeMenu(); }}></div>
+	<div class="ctx-menu" style="left: {ctxMenu.x}px; top: {ctxMenu.y}px">
+		<span class="ctx-label">{getCtxUsername()} — {ctxMenu.kind === 'mic' ? 'Mic' : 'Screen'}</span>
+		<div class="ctx-slider-row">
+			<input
+				type="range"
+				min="0"
+				max="100"
+				value={getCtxVolume()}
+				oninput={onCtxSliderInput}
+				class="ctx-slider"
+			/>
+			<span class="ctx-value">{getCtxVolume()}%</span>
+		</div>
+	</div>
+{/if}
 
 <style>
 	.channel-page {
@@ -700,62 +826,6 @@
 
 	.badge.sharing {
 		color: var(--success);
-	}
-
-	/* ── Drag-to-volume on peer cards ────────────────────── */
-
-	.peer-volume {
-		position: relative;
-		overflow: hidden;
-		cursor: ew-resize;
-		touch-action: none;
-		user-select: none;
-	}
-
-	.vol-fill {
-		position: absolute;
-		inset: 0;
-		right: auto;
-		width: calc(var(--vol) * 100%);
-		background: color-mix(in srgb, var(--text-primary) 6%, transparent);
-		border-radius: inherit;
-		transition: width 0.06s linear;
-		pointer-events: none;
-	}
-
-	.peer-volume:hover .vol-fill,
-	.peer-volume:active .vol-fill {
-		background: color-mix(in srgb, var(--text-primary) 10%, transparent);
-	}
-
-	.user-row {
-		position: relative;
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		width: 100%;
-		pointer-events: none;
-	}
-
-	.user-right {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-	}
-
-	.vol-pct {
-		font-size: 0.6rem;
-		color: var(--text-muted);
-		font-variant-numeric: tabular-nums;
-		min-width: 28px;
-		text-align: right;
-		opacity: 0;
-		transition: opacity 0.15s;
-	}
-
-	.peer-volume:hover .vol-pct,
-	.peer-volume:active .vol-pct {
-		opacity: 1;
 	}
 
 	/* ── Center area ─────────────────────────────────────── */
@@ -1136,5 +1206,79 @@
 	.error {
 		color: var(--danger);
 		font-size: 0.75rem;
+	}
+
+	/* ── Volume context menu ─────────────────────────────── */
+
+	.ctx-backdrop {
+		position: fixed;
+		inset: 0;
+		z-index: 100;
+	}
+
+	.ctx-menu {
+		position: fixed;
+		z-index: 101;
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: 10px 14px;
+		min-width: 200px;
+		box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.ctx-label {
+		font-size: 0.7rem;
+		font-weight: 500;
+		text-transform: uppercase;
+		color: var(--text-muted);
+		letter-spacing: 0.06em;
+	}
+
+	.ctx-slider-row {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.ctx-slider {
+		flex: 1;
+		height: 4px;
+		-webkit-appearance: none;
+		appearance: none;
+		background: var(--bg-tertiary);
+		border-radius: 2px;
+		outline: none;
+		cursor: pointer;
+	}
+
+	.ctx-slider::-webkit-slider-thumb {
+		-webkit-appearance: none;
+		appearance: none;
+		width: 14px;
+		height: 14px;
+		border-radius: 50%;
+		background: var(--text-primary);
+		cursor: pointer;
+	}
+
+	.ctx-slider::-moz-range-thumb {
+		width: 14px;
+		height: 14px;
+		border-radius: 50%;
+		background: var(--text-primary);
+		border: none;
+		cursor: pointer;
+	}
+
+	.ctx-value {
+		font-size: 0.7rem;
+		color: var(--text-muted);
+		font-variant-numeric: tabular-nums;
+		min-width: 32px;
+		text-align: right;
 	}
 </style>

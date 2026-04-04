@@ -5,6 +5,7 @@ export interface UserInfo {
 	username: string;
 	is_muted: boolean;
 	is_sharing_screen: boolean;
+	is_camera_on: boolean;
 }
 
 export interface ChannelInfo {
@@ -40,6 +41,7 @@ export type WSMessageType =
 	| 'chat_message'
 	| 'mute_state'
 	| 'screen_share_state'
+	| 'camera_state'
 	| 'error'
 	| 'peer_list'
 	| 'leave';
@@ -63,8 +65,12 @@ export interface PeerState {
 	username: string;
 	is_muted: boolean;
 	is_sharing_screen: boolean;
-	volume: number; // 0-1, local only
+	is_camera_on: boolean;
+	volume: number; // 0-1, mic volume local only
+	screenVolume: number; // 0-1, screen share audio volume local only
 	connection?: RTCPeerConnection;
 	audioStream?: MediaStream;
+	screenAudioStream?: MediaStream;
 	screenStream?: MediaStream;
+	videoStream?: MediaStream;
 }

@@ -2,19 +2,21 @@
 #
 # Differences from base:
 #   - coturn uses network_mode: host (direct UDP, better performance)
-#   - no port mapping needed (host networking exposes all ports)
+#   - prod turnserver config (all private IPs blocked, TLS port, wider relay range)
 #
-# You MUST also update coturn/turnserver.conf for production:
+# You MUST also update coturn/turnserver.prod.conf for your deployment:
 #   - Set external-ip=<YOUR_PUBLIC_IP>
-#   - Widen relay range: min-port=49152 / max-port=65535
-#   - Change user=saloon:<STRONG_PASSWORD>
+#   - Set static-auth-secret=<STRONG_RANDOM_SECRET>
+#   - Configure cert/pkey paths for TLS (TURNS on port 5349)
 #
 # And set matching env vars in .env:
 #   SALOON_COTURN_HOST=127.0.0.1   (or your public IP)
-#   SALOON_TURN_CREDENTIAL=<STRONG_PASSWORD>
+#   SALOON_TURN_SECRET=<SAME_STRONG_RANDOM_SECRET>
 #   SALOON_AUTH_SECRET=<RANDOM_SECRET>
 #   SALOON_TRUSTED_PROXY=true      (if behind nginx/Caddy)
 
 services:
   coturn:
     network_mode: host
+    volumes:
+      - ./coturn/turnserver.prod.conf:/etc/turnserver.conf:ro

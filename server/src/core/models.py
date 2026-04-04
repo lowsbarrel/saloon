@@ -1,47 +1,36 @@
-"""Pydantic models for request/response validation."""
+"""Pydantic models for request/response validation and internal state."""
 
 from __future__ import annotations
 
+import re
+import time
 from datetime import datetime, timezone
 from enum import Enum
+from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, field_validator
-import re
-
-
-# ── Enums ──────────────────────────────────────────────────────────────────
+from fastapi import WebSocket
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
 
 class WSMessageType(str, Enum):
-    # Signaling
     OFFER = "offer"
     ANSWER = "answer"
     ICE_CANDIDATE = "ice_candidate"
     PEER_JOINED = "peer_joined"
     PEER_LEFT = "peer_left"
-
-    # Chat
     CHAT_MESSAGE = "chat_message"
-
-    # Media state
     MUTE_STATE = "mute_state"
     SCREEN_SHARE_STATE = "screen_share_state"
-
-    # Errors
+    CAMERA_STATE = "camera_state"
     ERROR = "error"
-
-    # Client-initiated leave (faster than REST for peer notification)
     LEAVE = "leave"
-
-
-# ── Request models ─────────────────────────────────────────────────────────
 
 
 class CreateChannelRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=64)
     is_private: bool = False
-    password: str | None = None
+    password: str | None = Field(default=None, max_length=128)
 
     @field_validator("name")
     @classmethod
@@ -55,7 +44,7 @@ class CreateChannelRequest(BaseModel):
 
     @field_validator("password")
     @classmethod
-    def validate_password(cls, v: str | None, info) -> str | None:
+    def validate_password(cls, v: str | None, info: ValidationInfo) -> str | None:
         is_private = info.data.get("is_private", False)
         if is_private and (v is None or len(v) < 8):
             raise ValueError("Private channels require a password (min 8 chars)")
@@ -65,7 +54,7 @@ class CreateChannelRequest(BaseModel):
 
 
 class JoinChannelRequest(BaseModel):
-    password: str | None = None
+    password: str | None = Field(default=None, max_length=128)
 
 
 class UsernameRequest(BaseModel):
@@ -92,14 +81,18 @@ class ChatMessagePayload(BaseModel):
         return v
 
 
-# ── Response / internal models ─────────────────────────────────────────────
-
-
 class UserInfo(BaseModel):
     id: str
     username: str
     is_muted: bool = False
     is_sharing_screen: bool = False
+    is_camera_on: bool = False
+
+
+class IceServerConfig(BaseModel):
+    urls: str | list[str]
+    username: str | None = None
+    credential: str | None = None
 
 
 class ChannelInfo(BaseModel):
@@ -117,40 +110,30 @@ class UsernameResponse(BaseModel):
 
 
 class IceServersResponse(BaseModel):
-    ice_servers: list[dict]
+    ice_servers: list[IceServerConfig]
 
 
 class WSMessage(BaseModel):
     type: WSMessageType
     sender_id: str | None = None
     target_id: str | None = None
-    payload: dict | str | None = None
+    payload: dict[str, Any] | str | None = None
 
 
-# ── Internal state objects (not Pydantic — mutable) ───────────────────────
+class User(BaseModel):
+    """Mutable in-memory user state. websocket is excluded from serialization."""
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
-class User:
-    __slots__ = (
-        "id",
-        "username",
-        "is_muted",
-        "is_sharing_screen",
-        "websocket",
-        "peer_id",
-        "keep_alive",
-        "created_at",
-    )
-
-    def __init__(self, *, id: str, username: str, websocket=None):
-        self.id = id
-        self.username = username
-        self.is_muted = False
-        self.is_sharing_screen = False
-        self.websocket = websocket
-        self.peer_id: str | None = None
-        self.keep_alive: bool = False
-        self.created_at: float = __import__("time").time()
+    id: str
+    username: str
+    is_muted: bool = False
+    is_sharing_screen: bool = False
+    is_camera_on: bool = False
+    websocket: WebSocket | None = Field(default=None, exclude=True)
+    peer_id: str | None = None
+    keep_alive: bool = False
+    created_at: float = Field(default_factory=time.time)
 
     def to_info(self) -> UserInfo:
         return UserInfo(
@@ -158,21 +141,25 @@ class User:
             username=self.username,
             is_muted=self.is_muted,
             is_sharing_screen=self.is_sharing_screen,
+            is_camera_on=self.is_camera_on,
         )
 
 
-class Channel:
-    __slots__ = ("id", "name", "is_private", "password_hash", "users", "created_at")
+class Channel(BaseModel):
+    """Mutable in-memory channel state."""
 
-    def __init__(
-        self, *, name: str, is_private: bool = False, password_hash: str | None = None
-    ):
-        self.id = uuid4().hex
-        self.name = name
-        self.is_private = is_private
-        self.password_hash = password_hash
-        self.users: dict[str, User] = {}
-        self.created_at = datetime.now(timezone.utc)
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    id: str = Field(default_factory=lambda: uuid4().hex)
+    name: str
+    is_private: bool = False
+    password_hash: str | None = None
+    users: dict[str, User] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    def peers_of(self, exclude_user_id: str) -> list[User]:
+        """Return a snapshot of users in this channel excluding the given user."""
+        return [u for u in self.users.values() if u.id != exclude_user_id]
 
     def to_info(self, include_users: bool = True) -> ChannelInfo:
         return ChannelInfo(

@@ -15,13 +15,13 @@ services:
       - no-new-privileges:true
 
   coturn:
-    image: coturn/coturn:latest
+    image: coturn/coturn:4.9.0-r0
     ports:
       - "3478:3478/udp"
       - "3478:3478/tcp"
       - "49152-49252:49152-49252/udp"   # relay range (small for local dev)
     volumes:
-      - ./coturn/turnserver.conf:/etc/turnserver.conf:ro
+      - ./coturn/turnserver.dev.conf:/etc/turnserver.conf:ro
     restart: unless-stopped
     read_only: true
     security_opt:

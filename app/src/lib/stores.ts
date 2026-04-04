@@ -28,6 +28,7 @@ export const channels = writable<ChannelInfo[]>([]);
 export const peers = writable<Map<string, PeerState>>(new Map());
 export const isMuted = writable<boolean>(false);
 export const isSharingScreen = writable<boolean>(false);
+export const isCameraOn = writable<boolean>(false);
 
 // ── Chat ──────────────────────────────────────────────────────────────────
 
@@ -97,4 +98,5 @@ export function resetState(): void {
 	chatMessages.set([]);
 	isMuted.set(false);
 	isSharingScreen.set(false);
+	isCameraOn.set(false);
 }
