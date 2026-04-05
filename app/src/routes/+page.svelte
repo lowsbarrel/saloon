@@ -9,7 +9,8 @@
 	import { ArrowRight, Loader2, TriangleAlert } from 'lucide-svelte';
 	import FlameKindling from 'lucide-svelte/icons/flame-kindling';
 
-	let url = $state('');
+	const DEFAULT_SERVER = 'https://server.lowsbarrel.com';
+	let url = $state(DEFAULT_SERVER);
 	let loading = $state(false);
 	let error = $state('');
 	let httpWarning = $derived(
@@ -92,7 +93,7 @@
 		<div class="form">
 			<input
 				type="text"
-				placeholder="Server URL (e.g. http://localhost:8000)"
+				placeholder="Server URL (e.g. https://server.lowsbarrel.com)"
 				bind:value={url}
 				onkeydown={onKeydown}
 				disabled={loading}
