@@ -38,6 +38,7 @@ export class PeerManager {
 
 	private peerAudioStreams = new Map<string, Map<string, MediaStream>>();
 	private peerVideoStreams = new Map<string, Map<string, MediaStream>>();
+	private trackCleanups = new Map<string, (() => void)[]>();
 	private signaling: SignalingClient;
 	private userId: string;
 	private onPeersChanged: (peers: Map<string, PeerState>) => void;
@@ -125,7 +126,10 @@ export class PeerManager {
 		isOfferer: boolean,
 	): Promise<RTCPeerConnection> {
 		const existing = this.peers.get(peerId);
-		if (existing?.connection) existing.connection.close();
+		if (existing?.connection) {
+			existing.connection.close();
+			this.flushTrackCleanups(peerId);
+		}
 
 		const pc = new RTCPeerConnection(this.rtcConfig);
 		const peerState: PeerState = {
@@ -167,30 +171,30 @@ export class PeerManager {
 	): void {
 		pc.ontrack = (event) => {
 			const stream = event.streams[0] ?? new MediaStream([event.track]);
+			const track = event.track;
+			const isAudio = track.kind === 'audio';
+			const streamStore = isAudio ? this.peerAudioStreams : this.peerVideoStreams;
 
-			if (event.track.kind === 'audio') {
-				this.ensureStreamMap(this.peerAudioStreams, peerId).set(stream.id, stream);
+			this.ensureStreamMap(streamStore, peerId).set(stream.id, stream);
 
-				const cleanup = () => {
-					this.peerAudioStreams.get(peerId)?.delete(stream.id);
-					this.reclassifyAudio(peerId);
-				};
-				event.track.addEventListener('ended', cleanup);
-				event.track.addEventListener('mute', cleanup);
+			const cleanup = () => {
+				streamStore.get(peerId)?.delete(stream.id);
+				if (isAudio) this.reclassifyAudio(peerId);
+				else this.reclassifyVideo(peerId);
+			};
+			track.addEventListener('ended', cleanup);
+			track.addEventListener('mute', cleanup);
 
-				this.reclassifyAudio(peerId);
-			} else if (event.track.kind === 'video') {
-				this.ensureStreamMap(this.peerVideoStreams, peerId).set(stream.id, stream);
+			// Store removers so we can detach on peer teardown
+			const removers = this.trackCleanups.get(peerId) ?? [];
+			removers.push(() => {
+				track.removeEventListener('ended', cleanup);
+				track.removeEventListener('mute', cleanup);
+			});
+			this.trackCleanups.set(peerId, removers);
 
-				const cleanup = () => {
-					this.peerVideoStreams.get(peerId)?.delete(stream.id);
-					this.reclassifyVideo(peerId);
-				};
-				event.track.addEventListener('ended', cleanup);
-				event.track.addEventListener('mute', cleanup);
-
-				this.reclassifyVideo(peerId);
-			}
+			if (isAudio) this.reclassifyAudio(peerId);
+			else this.reclassifyVideo(peerId);
 
 			this.peers.set(peerId, peerState);
 			this.notifyChanged();
@@ -412,6 +416,7 @@ export class PeerManager {
 		if (!peer) return;
 
 		peer.connection?.close();
+		this.flushTrackCleanups(peerId);
 
 		this.cleanupPeerAudio(peerId, this.micAudio);
 		this.cleanupPeerAudio(peerId, this.screenAudio);
@@ -422,7 +427,10 @@ export class PeerManager {
 	}
 
 	destroy(): void {
-		for (const peer of this.peers.values()) peer.connection?.close();
+		for (const [peerId, peer] of this.peers) {
+			peer.connection?.close();
+			this.flushTrackCleanups(peerId);
+		}
 		this.peers.clear();
 		this.peerUsernames.clear();
 		this.peerAudioStreams.clear();
@@ -500,6 +508,11 @@ export class PeerManager {
 		if (!stream) return;
 		const tracks = kind === 'audio' ? stream.getAudioTracks() : stream.getVideoTracks();
 		for (const track of tracks) track.stop();
+	}
+
+	private flushTrackCleanups(peerId: string): void {
+		for (const fn of this.trackCleanups.get(peerId) ?? []) fn();
+		this.trackCleanups.delete(peerId);
 	}
 
 	private cleanupPeerAudio(peerId: string, store: AudioElementStore): void {

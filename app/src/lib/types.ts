@@ -39,6 +39,10 @@ export type WSMessageType =
 	| 'peer_joined'
 	| 'peer_left'
 	| 'chat_message'
+	| 'encrypted_chat'
+	| 'chat_history'
+	| 'public_key'
+	| 'peer_public_key'
 	| 'mute_state'
 	| 'screen_share_state'
 	| 'camera_state'
@@ -73,4 +77,5 @@ export interface PeerState {
 	screenAudioStream?: MediaStream;
 	screenStream?: MediaStream;
 	videoStream?: MediaStream;
+	publicKey?: Uint8Array;
 }

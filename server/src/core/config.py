@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     port: int = 8000
     log_level: str = "warning"
 
+    # CORS: Set to specific origins in production, e.g. ["https://saloon.example.com"]
+    # The default wildcard is intended only for local development.
     cors_origins: list[str] = ["*"]
 
     max_channels: int = 100
@@ -64,6 +66,8 @@ class Settings(BaseSettings):
     turn_secret: str = "saloon-dev-secret"
     turn_credential_ttl: int = 86400
     turn_realm: str = "saloon"
+
+    ws_idle_timeout: float = 300.0
 
     trusted_proxy: bool = False
     trusted_proxy_ips: list[str] = ["127.0.0.1", "::1"]

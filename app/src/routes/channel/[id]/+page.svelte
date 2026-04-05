@@ -16,12 +16,15 @@
 		isSharingScreen,
 		isCameraOn,
 		chatMessages,
-		resetState
+		resetState,
+		e2eeKeyPair,
+		peerPublicKeys
 	} from '$lib/stores';
 	import { persistSession } from '$lib/persistence';
 	import { setupChannel, subscribeChannelStores } from '$lib/channel-setup';
 	import { enumerateDevices } from '$lib/webrtc/media-devices';
 	import { ErrorMsg, errorMessage } from '$lib/errors';
+	import { encrypt } from '$lib/crypto';
 	import type { ChatMessage, PeerState, WSMessage } from '$lib/types';
 	import {
 		Mic,
@@ -41,6 +44,7 @@
 	} from 'lucide-svelte';
 
 	const channelId = page.params.id ?? '';
+	const CHANNEL_ID_RE = /^[0-9a-f]{32}$/;
 	let chatInput = $state('');
 	let chatContainer: HTMLDivElement = $state(undefined!);
 	let messages: ChatMessage[] = $state([]);
@@ -73,7 +77,7 @@
 	let hasVideoFeeds = $derived(screenSharers.length > 0 || cameraUsers.length > 0 || cameraOn);
 
 	onMount(async () => {
-		if (!get(isConnected) || !get(userId)) {
+		if (!get(isConnected) || !get(userId) || !CHANNEL_ID_RE.test(channelId)) {
 			goto('/');
 			return;
 		}
@@ -264,12 +268,26 @@
 		const content = chatInput.trim();
 		if (!content || content.length > 2000) return;
 
-		signalingClient.send({ type: 'chat_message', payload: { content } });
+		const kp = get(e2eeKeyPair);
+		const peerKeys = get(peerPublicKeys);
+		if (!kp) return;
+
+		const myUsername = get(username);
+
+		// Encrypt individually for each peer and route via target_id
+		for (const [peerId, peerPk] of peerKeys) {
+			const ciphertext = encrypt(content, peerPk, kp.secretKey);
+			signalingClient.send({
+				type: 'encrypted_chat',
+				target_id: peerId,
+				payload: { ciphertext, username: myUsername },
+			});
+		}
 
 		chatMessages.update((msgs) => {
 			const next = [
 				...msgs,
-				{ sender_id: get(userId), username: get(username), content, timestamp: Date.now() }
+				{ sender_id: get(userId), username: myUsername, content, timestamp: Date.now() }
 			];
 			return next.length > 500 ? next.slice(-500) : next;
 		});

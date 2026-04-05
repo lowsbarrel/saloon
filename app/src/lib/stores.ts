@@ -2,6 +2,7 @@
 
 import { writable, derived, get } from 'svelte/store';
 import type { ChannelInfo, ChatMessage, PeerState } from '$lib/types';
+import type { KeyPair } from '$lib/crypto';
 import { SignalingClient } from '$lib/signaling';
 import { PeerManager } from '$lib/webrtc/peer-manager';
 import { clearSession, saveLastServer } from '$lib/session';
@@ -33,6 +34,12 @@ export const isCameraOn = writable<boolean>(false);
 // ── Chat ──────────────────────────────────────────────────────────────────
 
 export const chatMessages = writable<ChatMessage[]>([]);
+
+// ── E2EE ──────────────────────────────────────────────────────────────────
+
+export const e2eeKeyPair = writable<KeyPair | null>(null);
+/** Peer public keys indexed by peer_id (base64 → Uint8Array). */
+export const peerPublicKeys = writable<Map<string, Uint8Array>>(new Map());
 
 // ── Singletons ────────────────────────────────────────────────────────────
 
@@ -81,6 +88,8 @@ export function resetState(): void {
 	currentChannel.set(null);
 	channels.set([]);
 	chatMessages.set([]);
+	e2eeKeyPair.set(null);
+	peerPublicKeys.set(new Map());
 	isMuted.set(false);
 	isSharingScreen.set(false);
 	isCameraOn.set(false);

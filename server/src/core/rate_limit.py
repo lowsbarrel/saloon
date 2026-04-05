@@ -17,6 +17,7 @@ class RateLimiter:
         self._max_calls = max_calls
         self._window = window_seconds
         self._calls: dict[str, list[float]] = defaultdict(list)
+        self._ttl = window_seconds * 10  # evict keys idle for 10× the window
 
     def is_allowed(self, key: str) -> bool:
         now = time.monotonic()
@@ -32,9 +33,15 @@ class RateLimiter:
         self._calls.pop(key, None)
 
     def gc(self) -> int:
-        """Purge all keys with no recent activity. Returns number removed."""
-        cutoff = time.monotonic() - self._window
-        stale = [k for k, ts in self._calls.items() if not ts or ts[-1] <= cutoff]
+        """Purge keys with no recent activity or past TTL. Returns number removed."""
+        now = time.monotonic()
+        cutoff = now - self._window
+        ttl_cutoff = now - self._ttl
+        stale = [
+            k
+            for k, ts in self._calls.items()
+            if not ts or ts[-1] <= cutoff or ts[-1] <= ttl_cutoff
+        ]
         for k in stale:
             del self._calls[k]
         return len(stale)

@@ -20,6 +20,10 @@ class WSMessageType(str, Enum):
     PEER_JOINED = "peer_joined"
     PEER_LEFT = "peer_left"
     CHAT_MESSAGE = "chat_message"
+    ENCRYPTED_CHAT = "encrypted_chat"
+    CHAT_HISTORY = "chat_history"
+    PUBLIC_KEY = "public_key"
+    PEER_PUBLIC_KEY = "peer_public_key"
     MUTE_STATE = "mute_state"
     SCREEN_SHARE_STATE = "screen_share_state"
     CAMERA_STATE = "camera_state"
@@ -130,6 +134,7 @@ class User(BaseModel):
     is_muted: bool = False
     is_sharing_screen: bool = False
     is_camera_on: bool = False
+    public_key: str | None = None
     websocket: WebSocket | None = Field(default=None, exclude=True)
     peer_id: str | None = None
     keep_alive: bool = False

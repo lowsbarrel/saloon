@@ -20,12 +20,13 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' http: https: ws: wss:; img-src 'self' data:; media-src 'self' mediastream:"
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:* https: wss:; img-src 'self' data:; media-src 'self' mediastream:"
     }
   },
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": "v2Compatible",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -36,6 +37,14 @@
     "macOS": {
       "entitlements": null,
       "infoPlist": "Info.plist"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/lowsbarrel/saloon/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEY2QUQzRkQwOUI1MUZEMjEKUldRaC9WR2IwRCt0OXVQOEF1YytVTnhVcmd3MEJiRGp1c24zRU8ybEF1cFFGOGJQZEJNV0t1Y2YK"
     }
   }
 }

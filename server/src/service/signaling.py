@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import TYPE_CHECKING, Any
@@ -54,7 +55,7 @@ async def handle_ws(
     join_msg = WSMessage(
         type=WSMessageType.PEER_JOINED,
         sender_id=user.peer_id,
-        payload={"username": user.username},
+        payload={"username": user.username, "public_key": user.public_key},
     ).model_dump()
     for peer in peers:
         await send_json(peer.websocket, join_msg)
@@ -66,6 +67,7 @@ async def handle_ws(
             "is_muted": p.is_muted,
             "is_sharing_screen": p.is_sharing_screen,
             "is_camera_on": p.is_camera_on,
+            "public_key": p.public_key,
         }
         for p in peers
     ]
@@ -73,7 +75,13 @@ async def handle_ws(
 
     try:
         while True:
-            raw = await ws.receive_text()
+            try:
+                raw = await asyncio.wait_for(
+                    ws.receive_text(), timeout=settings.ws_idle_timeout
+                )
+            except TimeoutError:
+                await ws.close(code=4008, reason="Idle timeout")
+                break
 
             if len(raw) > settings.max_ws_message_size:
                 await send_json(
@@ -138,28 +146,24 @@ async def handle_ws(
                         },
                     )
 
-            elif msg_type == WSMessageType.CHAT_MESSAGE:
+            elif msg_type == WSMessageType.PUBLIC_KEY:
                 raw_payload = data.get("payload")
-                content = (
-                    raw_payload.get("content", "")
-                    if isinstance(raw_payload, dict)
-                    else ""
+                key = (
+                    raw_payload.get("key", "") if isinstance(raw_payload, dict) else ""
                 )
-                if not isinstance(content, str):
+                if not isinstance(key, str) or not key:
                     continue
-                content = content.strip()
-                if not content or len(content) > settings.max_chat_length:
-                    await send_json(
-                        ws,
-                        WSMessage(
-                            type=WSMessageType.ERROR,
-                            payload={
-                                "message": "Invalid message length (1-2000 chars)"
-                            },
-                        ).model_dump(),
-                    )
-                    continue
+                user.public_key = key
+                # Broadcast to all peers so they can encrypt for us
+                pk_msg = {
+                    "type": WSMessageType.PEER_PUBLIC_KEY,
+                    "sender_id": user.peer_id,
+                    "payload": {"key": key},
+                }
+                for peer in channel.peers_of(user_id):
+                    await send_json(peer.websocket, pk_msg)
 
+            elif msg_type == WSMessageType.ENCRYPTED_CHAT:
                 if not chat_limiter.is_allowed(user_id):
                     await send_json(
                         ws,
@@ -170,13 +174,52 @@ async def handle_ws(
                     )
                     continue
 
-                chat_msg = {
-                    "type": WSMessageType.CHAT_MESSAGE,
-                    "sender_id": user.peer_id,
-                    "payload": {"content": content, "username": user.username},
-                }
-                for peer in channel.peers_of(user_id):
-                    await send_json(peer.websocket, chat_msg)
+                target_id = data.get("target_id")
+                payload = data.get("payload")
+                if (
+                    not isinstance(target_id, str)
+                    or not isinstance(payload, dict)
+                    or not isinstance(payload.get("ciphertext"), str)
+                ):
+                    continue
+
+                target = next(
+                    (p for p in channel.peers_of(user_id) if p.peer_id == target_id),
+                    None,
+                )
+                if target:
+                    await send_json(
+                        target.websocket,
+                        {
+                            "type": WSMessageType.ENCRYPTED_CHAT,
+                            "sender_id": user.peer_id,
+                            "payload": payload,
+                        },
+                    )
+
+            elif msg_type == WSMessageType.CHAT_HISTORY:
+                target_id = data.get("target_id")
+                payload = data.get("payload")
+                if (
+                    not isinstance(target_id, str)
+                    or not isinstance(payload, dict)
+                    or not isinstance(payload.get("ciphertext"), str)
+                ):
+                    continue
+
+                target = next(
+                    (p for p in channel.peers_of(user_id) if p.peer_id == target_id),
+                    None,
+                )
+                if target:
+                    await send_json(
+                        target.websocket,
+                        {
+                            "type": WSMessageType.CHAT_HISTORY,
+                            "sender_id": user.peer_id,
+                            "payload": payload,
+                        },
+                    )
 
             elif msg_type == WSMessageType.MUTE_STATE:
                 raw_payload = data.get("payload")
