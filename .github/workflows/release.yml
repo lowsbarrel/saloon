@@ -140,6 +140,7 @@ jobs:
 
       - uses: actions/download-artifact@v7
         with:
+          pattern: tauri-*
           path: artifacts
           merge-multiple: true
 
