@@ -7,8 +7,37 @@ const REQUEST_TIMEOUT_MS = 10_000;
 let _baseUrl = '';
 let _authToken = '';
 
+function normalizeBaseUrl(url: string): string {
+	const trimmed = url.trim().replace(/\/+$/, '');
+	try {
+		const parsed = new URL(trimmed);
+		if (parsed.protocol === 'http:' && parsed.hostname === 'localhost') {
+			parsed.hostname = '127.0.0.1';
+		}
+		return parsed.toString().replace(/\/+$/, '');
+	} catch {
+		return trimmed;
+	}
+}
+
+function slugifyChannelName(value: string): string {
+	const normalized = value
+		.trim()
+		.toLowerCase()
+		.replace(/[_\s]+/g, '-')
+		.replace(/[^a-z0-9-]/g, '')
+		.replace(/-{2,}/g, '-')
+		.replace(/^-+|-+$/g, '');
+
+	if (!normalized) {
+		throw new Error('Enter a valid private channel name');
+	}
+
+	return normalized;
+}
+
 export function setBaseUrl(url: string) {
-	_baseUrl = url.replace(/\/+$/, '');
+	_baseUrl = normalizeBaseUrl(url);
 }
 
 export function getBaseUrl(): string {
@@ -97,11 +126,31 @@ export async function createChannel(
 	});
 }
 
+function normalizeChannelName(value: string): string {
+	const trimmed = value.trim();
+	if (!trimmed) {
+		throw new Error('Enter a private channel name');
+	}
+
+	try {
+		const parsed = new URL(trimmed);
+		const pathSegments = parsed.pathname.split('/').filter(Boolean);
+		const lastSegment = pathSegments.at(-1);
+		if (!lastSegment) {
+			throw new Error('Enter a valid private channel name');
+		}
+		return slugifyChannelName(lastSegment);
+	} catch {
+		return slugifyChannelName(trimmed);
+	}
+}
+
 export async function joinChannel(
 	channelId: string,
 	password?: string
 ): Promise<ChannelInfo> {
-	return request<ChannelInfo>(`/channels/${encodeURIComponent(channelId)}/join`, {
+	const normalizedChannelId = normalizeChannelName(channelId);
+	return request<ChannelInfo>(`/channels/${encodeURIComponent(normalizedChannelId)}/join`, {
 		method: 'POST',
 		body: JSON.stringify({ password: password ?? null })
 	});

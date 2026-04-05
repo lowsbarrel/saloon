@@ -11,11 +11,18 @@ from .exceptions import (
     AlreadyInChannelError,
     ChannelFullError,
     ChannelLimitReachedError,
+    ChannelNameTakenError,
     ChannelNotFoundError,
     InvalidPasswordError,
     PasswordRequiredError,
 )
-from .models import Channel, ChannelInfo, CreateChannelRequest, User
+from .models import (
+    Channel,
+    ChannelInfo,
+    CreateChannelRequest,
+    User,
+    slugify_channel_name,
+)
 
 
 class ChannelStore:
@@ -26,6 +33,12 @@ class ChannelStore:
         self._user_to_channel: dict[str, str] = {}
         self._lock = asyncio.Lock()
 
+    def _normalize_channel_ref(self, channel_ref: str) -> str:
+        try:
+            return slugify_channel_name(channel_ref)
+        except ValueError:
+            return channel_ref.strip().lower()
+
     async def list_public(self) -> list[ChannelInfo]:
         async with self._lock:
             return [
@@ -35,23 +48,31 @@ class ChannelStore:
             ]
 
     async def get(self, channel_id: str) -> Channel | None:
+        normalized_channel_id = self._normalize_channel_ref(channel_id)
         async with self._lock:
-            return self._channels.get(channel_id)
+            return self._channels.get(normalized_channel_id)
 
     async def exists(self, channel_id: str) -> bool:
+        normalized_channel_id = self._normalize_channel_ref(channel_id)
         async with self._lock:
-            return channel_id in self._channels
+            return normalized_channel_id in self._channels
 
     async def create(self, req: CreateChannelRequest) -> ChannelInfo:
+        channel_id = slugify_channel_name(req.name)
         pw_hash = (
             hash_password(req.password) if req.is_private and req.password else None
         )
         channel = Channel(
-            name=req.name, is_private=req.is_private, password_hash=pw_hash
+            id=channel_id,
+            name=req.name,
+            is_private=req.is_private,
+            password_hash=pw_hash,
         )
         async with self._lock:
             if len(self._channels) >= settings.max_channels:
                 raise ChannelLimitReachedError()
+            if channel.id in self._channels:
+                raise ChannelNameTakenError()
             self._channels[channel.id] = channel
         return channel.to_info()
 
@@ -62,8 +83,9 @@ class ChannelStore:
         password: str | None = None,
     ) -> ChannelInfo:
         """Add user to channel. Raises a domain exception on failure."""
+        normalized_channel_id = self._normalize_channel_ref(channel_id)
         async with self._lock:
-            channel = self._channels.get(channel_id)
+            channel = self._channels.get(normalized_channel_id)
             if channel is None:
                 raise ChannelNotFoundError()
             if channel.is_private:
@@ -79,7 +101,7 @@ class ChannelStore:
                 raise ChannelFullError()
             user.peer_id = uuid4().hex[:16]
             channel.users[user.id] = user
-            self._user_to_channel[user.id] = channel_id
+            self._user_to_channel[user.id] = normalized_channel_id
             return channel.to_info()
 
     async def leave(self, channel_id: str, user_id: str) -> bool:
@@ -87,8 +109,9 @@ class ChannelStore:
 
         Returns True if the channel was deleted.
         """
+        normalized_channel_id = self._normalize_channel_ref(channel_id)
         async with self._lock:
-            channel = self._channels.get(channel_id)
+            channel = self._channels.get(normalized_channel_id)
             if channel is None:
                 return False
             user = channel.users.pop(user_id, None)
@@ -96,7 +119,7 @@ class ChannelStore:
                 user.peer_id = None
             self._user_to_channel.pop(user_id, None)
             if len(channel.users) == 0:
-                del self._channels[channel_id]
+                del self._channels[normalized_channel_id]
                 return True
             return False
 

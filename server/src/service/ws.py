@@ -59,7 +59,6 @@ async def handle_channel(ws: WebSocket, channel_id: str, user_id: str) -> None:
     except WebSocketDisconnect:
         pass
     finally:
-        await store.remove_user_from_all(user_id)
         user = active_users.get(user_id)
         if user and user.keep_alive:
             user.keep_alive = False

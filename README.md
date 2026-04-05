@@ -77,10 +77,10 @@ pnpm tauri dev
 
 1. **Connect** — Enter a server URL
 2. **Choose a username** — Pick a prefix, the server appends a random verb + noun (e.g. `cosmicrunswind`)
-3. **Lobby** — Browse public channels or create/join private ones (password-protected)
+3. **Lobby** — Browse public channels or create/join private ones by unique name (password-protected)
 4. **Channel** — Voice chat is always on (toggle mute). Toggle camera, share your screen, and use text chat. Right-click any user or video tile to adjust their volume. Leave to go back to the lobby
 
-All media (audio, video, screen) flows peer-to-peer via WebRTC. The server only relays signaling messages and chat. Usernames are session-scoped. Private channels auto-delete when the last user leaves.
+All media (audio, video, screen) flows peer-to-peer via WebRTC. The server only relays signaling messages and chat. Usernames are session-scoped. Channel names are normalized to lowercase URL-safe slugs and must be unique. Private channels auto-delete when the last user leaves.
 
 ## Deployment
 

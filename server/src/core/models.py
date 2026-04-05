@@ -7,10 +7,19 @@ import time
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
-from uuid import uuid4
 
 from fastapi import WebSocket
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
+
+
+def slugify_channel_name(value: str) -> str:
+    normalized = value.strip().lower()
+    normalized = re.sub(r"[_\s]+", "-", normalized)
+    normalized = re.sub(r"[^a-z0-9-]", "", normalized)
+    normalized = re.sub(r"-{2,}", "-", normalized).strip("-")
+    if not normalized:
+        raise ValueError("Channel name must contain letters or numbers")
+    return normalized
 
 
 class WSMessageType(str, Enum):
@@ -44,6 +53,7 @@ class CreateChannelRequest(BaseModel):
             raise ValueError("Channel name cannot be empty")
         if not re.match(r"^[\w\s\-]+$", v):
             raise ValueError("Channel name contains invalid characters")
+        slugify_channel_name(v)
         return v
 
     @field_validator("password")
@@ -155,7 +165,7 @@ class Channel(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    id: str = Field(default_factory=lambda: uuid4().hex)
+    id: str
     name: str
     is_private: bool = False
     password_hash: str | None = None

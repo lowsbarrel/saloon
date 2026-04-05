@@ -35,6 +35,8 @@
 		VideoOff,
 		LogOut,
 		Send,
+		Copy,
+		Check,
 		Maximize2,
 		Minimize2,
 		X,
@@ -44,7 +46,7 @@
 	} from 'lucide-svelte';
 
 	const channelId = page.params.id ?? '';
-	const CHANNEL_ID_RE = /^[0-9a-f]{32}$/;
+	const CHANNEL_SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 	let chatInput = $state('');
 	let chatContainer: HTMLDivElement = $state(undefined!);
 	let messages: ChatMessage[] = $state([]);
@@ -59,6 +61,8 @@
 	let fullscreenType: 'screen' | 'camera' = $state('screen');
 	let chatOpen = $state(true);
 	let intentionalLeave = false;
+	let inviteCopied = $state(false);
+	let inviteCopiedTimeout: ReturnType<typeof setTimeout> | null = null;
 
 	// Device selection
 	let showDevicePicker = $state(false);
@@ -77,7 +81,7 @@
 	let hasVideoFeeds = $derived(screenSharers.length > 0 || cameraUsers.length > 0 || cameraOn);
 
 	onMount(async () => {
-		if (!get(isConnected) || !get(userId) || !CHANNEL_ID_RE.test(channelId)) {
+		if (!get(isConnected) || !get(userId) || !CHANNEL_SLUG_RE.test(channelId)) {
 			goto('/');
 			return;
 		}
@@ -122,12 +126,26 @@
 
 	onDestroy(() => {
 		intentionalLeave = true;
+		if (inviteCopiedTimeout) clearTimeout(inviteCopiedTimeout);
 		navigator.mediaDevices.removeEventListener('devicechange', onDeviceChange);
 		for (const unsub of unsubs) unsub();
 		unsubs.length = 0;
 		destroyPeerManager();
 		signalingClient.disconnect();
 	});
+
+	async function copyPrivateChannelJoinName(): Promise<void> {
+		try {
+			await navigator.clipboard.writeText(channelId);
+			inviteCopied = true;
+			if (inviteCopiedTimeout) clearTimeout(inviteCopiedTimeout);
+			inviteCopiedTimeout = setTimeout(() => {
+				inviteCopied = false;
+			}, 2000);
+		} catch {
+			error = 'Failed to copy private channel name';
+		}
+	}
 
 	function leave() {
 		intentionalLeave = true;
@@ -337,6 +355,24 @@
 </script>
 
 <div class="channel-page">
+	{#if $currentChannel?.is_private}
+		<div class="private-channel-banner">
+			<div class="private-channel-copy">
+				<span class="private-channel-label">Private join name</span>
+				<span class="private-channel-id">{channelId}</span>
+				<span class="private-channel-hint">Share this name and the password. Channel names are normalized to lowercase slugs.</span>
+			</div>
+			<button class="btn-ghost private-channel-btn" onclick={copyPrivateChannelJoinName}>
+				{#if inviteCopied}
+					<Check size={14} />
+					Copied
+				{:else}
+					<Copy size={14} />
+					Copy Name
+				{/if}
+			</button>
+		</div>
+	{/if}
 	<div class="channel-body">
 		<!-- Left sidebar: users -->
 		<aside class="sidebar">
@@ -605,6 +641,48 @@
 		flex-direction: column;
 		height: 100%;
 		overflow: hidden;
+	}
+
+	.private-channel-banner {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 16px;
+		padding: 12px 20px;
+		border-bottom: 1px solid var(--border);
+		background: var(--bg-secondary);
+	}
+
+	.private-channel-copy {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		min-width: 0;
+	}
+
+	.private-channel-label {
+		font-size: 0.75rem;
+		text-transform: uppercase;
+		letter-spacing: 0.08em;
+		color: var(--text-secondary);
+	}
+
+	.private-channel-id {
+		font-family: var(--font-mono, 'SFMono-Regular', Consolas, monospace);
+		font-size: 0.95rem;
+		word-break: break-all;
+	}
+
+	.private-channel-hint {
+		font-size: 0.85rem;
+		color: var(--text-secondary);
+	}
+
+	.private-channel-btn {
+		display: inline-flex;
+		align-items: center;
+		gap: 8px;
+		flex-shrink: 0;
 	}
 
 	.channel-body {

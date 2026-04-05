@@ -190,7 +190,8 @@
 		<div class="panel">
 			<h3>Join Private Channel</h3>
 			<div class="panel-form">
-				<input type="text" placeholder="Channel ID" bind:value={joinId} />
+				<input type="text" placeholder="Private channel name or invite link" bind:value={joinId} />
+				<p class="panel-hint">Private channel names are unique. We normalize them to lowercase slugs automatically.</p>
 				<input type="password" placeholder="Password" bind:value={joinPassword} />
 				<button
 					class="btn-primary action-btn"
@@ -338,6 +339,12 @@
 		display: flex;
 		flex-direction: column;
 		gap: 10px;
+	}
+
+	.panel-hint {
+		font-size: 0.85rem;
+		color: var(--text-secondary);
+		line-height: 1.4;
 	}
 
 	.checkbox {

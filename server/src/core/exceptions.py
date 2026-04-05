@@ -37,6 +37,11 @@ class ChannelLimitReachedError(SaloonError):
         super().__init__("Server channel limit reached")
 
 
+class ChannelNameTakenError(SaloonError):
+    def __init__(self) -> None:
+        super().__init__("Channel name is already in use")
+
+
 class RateLimitedError(SaloonError):
     def __init__(self, detail: str = "Too many requests. Try again later.") -> None:
         super().__init__(detail)
