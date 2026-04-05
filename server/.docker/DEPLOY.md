@@ -5,6 +5,12 @@ Saloon consists of two services:
 - **saloon** — FastAPI server (HTTP + WebSocket signaling)
 - **coturn** — STUN/TURN relay server (UDP/TCP, required for WebRTC)
 
+Pre-built server images are published to GHCR on every release:
+
+```bash
+docker pull ghcr.io/lowsbarrel/saloon/server:latest
+```
+
 ---
 
 ## Local Development
@@ -219,3 +225,17 @@ Saloon uses **in-memory state** (channels, users, rate limiters). Running
 multiple API instances means users on different instances won't share
 channels. To scale horizontally, you'd need to move state to a shared
 store like Redis. For moderate traffic, a single instance is fine.
+
+---
+
+## CORS
+
+The server allows all origins by default (`SALOON_CORS_ORIGINS=["*"]`).
+For production, restrict this to your client domains:
+
+```env
+SALOON_CORS_ORIGINS=["https://saloon.lowsbarrel.com", "https://yourdomain.com"]
+```
+
+This is required for the web client (GitHub Pages) to communicate with
+your server. Desktop (Tauri) clients are not affected by CORS.
