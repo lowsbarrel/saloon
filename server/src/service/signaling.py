@@ -73,6 +73,17 @@ async def handle_ws(
     ]
     await send_json(ws, {"type": "peer_list", "payload": peer_list})
 
+    async def _ping_loop() -> None:
+        """Send periodic WebSocket pings to detect dead connections."""
+        try:
+            while True:
+                await asyncio.sleep(settings.ws_ping_interval)
+                await ws.send_json({"type": "ping"})
+        except Exception:
+            pass
+
+    ping_task = asyncio.create_task(_ping_loop())
+
     try:
         while True:
             try:
@@ -106,6 +117,9 @@ async def handle_ws(
                 continue
 
             msg_type = data.get("type")
+
+            if msg_type == "pong":
+                continue
 
             if msg_type in (
                 WSMessageType.OFFER,
@@ -287,6 +301,7 @@ async def handle_ws(
             "WebSocket error for user %s in channel %s", user_id, channel_id
         )
     finally:
+        ping_task.cancel()
         peer_id = user.peer_id
         chat_limiter.cleanup(user_id)
 

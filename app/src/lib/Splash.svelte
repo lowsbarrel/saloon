@@ -143,4 +143,25 @@
 			transform: translateY(0);
 		}
 	}
+
+	@media (max-width: 480px) {
+		.splash-title {
+			font-size: 2.8rem;
+		}
+
+		.logo-row :global(.splash-icon) {
+			width: 32px;
+			height: 32px;
+		}
+
+		.logo-row {
+			gap: 10px;
+		}
+
+		.tagline {
+			font-size: 0.95rem;
+			padding: 0 20px;
+			text-align: center;
+		}
+	}
 </style>

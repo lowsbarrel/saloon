@@ -211,4 +211,35 @@
 		margin-top: 16px;
 		font-size: 0.8rem;
 	}
+
+	@media (max-width: 480px) {
+		.card {
+			padding: 24px 16px;
+		}
+
+		h2 {
+			font-size: 1.3rem;
+		}
+
+		.generated-name {
+			font-size: 1.4rem;
+		}
+
+		.actions {
+			flex-direction: column;
+		}
+
+		.reroll-btn, .confirm-btn {
+			justify-content: center;
+			padding: 12px;
+		}
+
+		.generate-btn {
+			padding: 14px;
+		}
+
+		input {
+			padding: 14px 16px;
+		}
+	}
 </style>

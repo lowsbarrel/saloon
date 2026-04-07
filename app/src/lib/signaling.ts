@@ -39,6 +39,10 @@ export class SignalingClient {
 			this.ws.onmessage = (event) => {
 				try {
 					const msg: WSMessage = JSON.parse(event.data);
+					if (msg.type === 'ping') {
+						this.send({ type: 'pong' });
+						return;
+					}
 					this.emit(msg);
 				} catch {
 					// Ignore malformed messages

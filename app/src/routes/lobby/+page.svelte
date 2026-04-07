@@ -137,20 +137,19 @@
 	<header class="lobby-header">
 		<div class="header-left">
 			<h2>Lobby</h2>
-			<span class="user-tag">signed in as {$username}</span>
+			<span class="user-tag">{$username}</span>
 		</div>
 		<div class="header-actions">
 			<button class="btn-ghost action-btn" onclick={() => (showJoinPrivate = !showJoinPrivate)}>
 				<KeyRound size={14} />
-				Join Private
+				<span class="action-label">Join Private</span>
 			</button>
 			<button class="btn-primary action-btn" onclick={() => (showCreate = !showCreate)}>
 				<Plus size={14} />
-				New Channel
+				<span class="action-label">New Channel</span>
 			</button>
 			<button class="btn-ghost action-btn logout-btn" onclick={logout} title="Disconnect and change server">
 				<LogOut size={14} />
-				Logout
 			</button>
 		</div>
 	</header>
@@ -274,28 +273,49 @@
 		max-width: 720px;
 		margin: 0 auto;
 		width: 100%;
+		-webkit-overflow-scrolling: touch;
 	}
 
 	.lobby-header {
 		display: flex;
 		justify-content: space-between;
-		align-items: flex-end;
+		align-items: center;
+		gap: 12px;
+	}
+
+	.header-left {
+		display: flex;
+		align-items: baseline;
+		gap: 10px;
+		min-width: 0;
 	}
 
 	.header-left h2 {
 		font-size: 1.6rem;
 		font-weight: 700;
 		letter-spacing: -0.03em;
+		flex-shrink: 0;
 	}
 
 	.user-tag {
 		color: var(--text-muted);
 		font-size: 0.8rem;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
 	.header-actions {
 		display: flex;
 		gap: 8px;
+		flex-shrink: 0;
+	}
+
+	.action-btn {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		font-size: 0.8rem;
 	}
 
 	.logout-btn {
@@ -304,13 +324,6 @@
 
 	.logout-btn:hover {
 		background: color-mix(in srgb, var(--danger) 10%, transparent);
-	}
-
-	.action-btn {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		font-size: 0.8rem;
 	}
 
 	.error {
@@ -439,12 +452,16 @@
 		align-items: center;
 		gap: 6px;
 		color: var(--text-secondary);
+		min-width: 0;
 	}
 
 	.channel-name {
 		font-weight: 600;
 		font-size: 0.95rem;
 		color: var(--text-primary);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
 	.channel-count {
@@ -453,6 +470,7 @@
 		gap: 4px;
 		color: var(--text-muted);
 		font-size: 0.75rem;
+		flex-shrink: 0;
 	}
 
 	.channel-users {
@@ -470,5 +488,66 @@
 		border-radius: 20px;
 		font-size: 0.7rem;
 		color: var(--text-secondary);
+	}
+
+	/* ── Mobile ──────────────────────────────────────────── */
+
+	@media (max-width: 600px) {
+		.lobby-page {
+			padding: 20px 16px;
+			gap: 16px;
+		}
+
+		.lobby-header {
+			flex-direction: column;
+			align-items: stretch;
+			gap: 12px;
+		}
+
+		.header-left {
+			justify-content: space-between;
+		}
+
+		.header-left h2 {
+			font-size: 1.3rem;
+		}
+
+		.header-actions {
+			display: grid;
+			grid-template-columns: 1fr 1fr auto;
+			gap: 8px;
+		}
+
+		.action-btn {
+			justify-content: center;
+			padding: 10px 12px;
+		}
+
+		.action-label {
+			display: inline;
+		}
+
+		.panel {
+			padding: 16px;
+		}
+
+		.channel-card {
+			padding: 14px;
+		}
+
+		.empty-state {
+			padding: 40px 0;
+		}
+	}
+
+	@media (max-width: 380px) {
+		.action-label {
+			display: none;
+		}
+
+		.header-actions {
+			grid-template-columns: auto auto auto;
+			justify-content: flex-start;
+		}
 	}
 </style>

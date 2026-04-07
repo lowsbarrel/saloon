@@ -68,6 +68,8 @@ class Settings(BaseSettings):
     turn_realm: str = "saloon"
 
     ws_idle_timeout: float = 300.0
+    ws_ping_interval: float = 30.0
+    gc_ghost_users_interval: float = 60.0
 
     trusted_proxy: bool = False
     trusted_proxy_ips: list[str] = ["127.0.0.1", "::1"]

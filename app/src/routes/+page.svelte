@@ -208,4 +208,18 @@
 		from { transform: rotate(0deg); }
 		to { transform: rotate(360deg); }
 	}
+
+	@media (max-width: 480px) {
+		.connect-card {
+			padding: 24px 16px;
+		}
+
+		h1 {
+			font-size: 2.2rem;
+		}
+
+		.subtitle {
+			margin-bottom: 28px;
+		}
+	}
 </style>

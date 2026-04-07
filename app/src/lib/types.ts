@@ -48,7 +48,9 @@ export type WSMessageType =
 	| 'camera_state'
 	| 'error'
 	| 'peer_list'
-	| 'leave';
+	| 'leave'
+	| 'ping'
+	| 'pong';
 
 export interface WSMessage {
 	type: WSMessageType;

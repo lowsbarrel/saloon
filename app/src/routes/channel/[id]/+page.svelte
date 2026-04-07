@@ -42,7 +42,8 @@
 		X,
 		MessageSquare,
 		Users,
-		Settings
+		Settings,
+		ChevronDown
 	} from 'lucide-svelte';
 
 	const channelId = page.params.id ?? '';
@@ -59,7 +60,8 @@
 
 	let fullscreenPeerId: string | null = $state(null);
 	let fullscreenType: 'screen' | 'camera' = $state('screen');
-	let chatOpen = $state(true);
+	let chatOpen = $state(false);
+	let sidebarOpen = $state(false);
 	let intentionalLeave = false;
 	let inviteCopied = $state(false);
 	let inviteCopiedTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -79,6 +81,8 @@
 	let screenSharers = $derived(peerArray.filter((p) => p.is_sharing_screen && p.screenStream));
 	let cameraUsers = $derived(peerArray.filter((p) => p.is_camera_on && p.videoStream));
 	let hasVideoFeeds = $derived(screenSharers.length > 0 || cameraUsers.length > 0 || cameraOn);
+	let peerCount = $derived(peerArray.length);
+	let unreadCount = $state(0);
 
 	onMount(async () => {
 		if (!get(isConnected) || !get(userId) || !CHANNEL_SLUG_RE.test(channelId)) {
@@ -94,6 +98,7 @@
 					if (fullscreenPeerId === peerId) fullscreenPeerId = null;
 				},
 				onChatMessage() {
+					if (!chatOpen) unreadCount++;
 					requestAnimationFrame(() => {
 						if (chatContainer) chatContainer.scrollTop = chatContainer.scrollHeight;
 					});
@@ -282,6 +287,11 @@
 		return peer?.username ?? '';
 	}
 
+	function openChat() {
+		chatOpen = true;
+		unreadCount = 0;
+	}
+
 	function sendChat(): void {
 		const content = chatInput.trim();
 		if (!content || content.length > 2000) return;
@@ -292,7 +302,6 @@
 
 		const myUsername = get(username);
 
-		// Encrypt individually for each peer and route via target_id
 		for (const [peerId, peerPk] of peerKeys) {
 			const ciphertext = encrypt(content, peerPk, kp.secretKey);
 			signalingClient.send({
@@ -358,9 +367,8 @@
 	{#if $currentChannel?.is_private}
 		<div class="private-channel-banner">
 			<div class="private-channel-copy">
-				<span class="private-channel-label">Private join name</span>
+				<span class="private-channel-label">Private channel</span>
 				<span class="private-channel-id">{channelId}</span>
-				<span class="private-channel-hint">Share this name and the password. Channel names are normalized to lowercase slugs.</span>
 			</div>
 			<button class="btn-ghost private-channel-btn" onclick={copyPrivateChannelJoinName}>
 				{#if inviteCopied}
@@ -368,67 +376,53 @@
 					Copied
 				{:else}
 					<Copy size={14} />
-					Copy Name
+					Copy
 				{/if}
 			</button>
 		</div>
 	{/if}
+
 	<div class="channel-body">
-		<!-- Left sidebar: users -->
-		<aside class="sidebar">
-			<div class="sidebar-section">
-				<h3>
-					<Users size={12} />
-					Users
-				</h3>
-				<div class="user-list">
-					<!-- Self -->
-					<div class="user-item self">
+		<!-- Sidebar -->
+		{#if sidebarOpen}
+			<!-- svelte-ignore a11y_no_static_element_interactions -->
+			<!-- svelte-ignore a11y_click_events_have_key_events -->
+			<div class="panel-backdrop" onclick={() => (sidebarOpen = false)}></div>
+		{/if}
+		<aside class="sidebar" class:open={sidebarOpen}>
+			<div class="panel-header sidebar-header">
+				<h3><Users size={13} /> Users · {peerCount + 1}</h3>
+				<button class="panel-close" onclick={() => (sidebarOpen = false)}><X size={16} /></button>
+			</div>
+			<div class="user-list">
+				<div class="user-item self">
+					<div class="user-info">
+						<span class="user-name">{$username}</span>
+						<span class="you-label">you</span>
+					</div>
+					<div class="user-badges">
+						{#if muted}<span class="badge muted"><MicOff size={10} /></span>{/if}
+						{#if sharing}<span class="badge sharing"><Monitor size={10} /></span>{/if}
+						{#if cameraOn}<span class="badge sharing"><Video size={10} /></span>{/if}
+					</div>
+				</div>
+				{#each peerArray as peer (peer.id)}
+					<!-- svelte-ignore a11y_no_static_element_interactions -->
+					<div class="user-item" oncontextmenu={(e) => openVolumeMenu(peer.id, 'mic', e)}>
 						<div class="user-info">
-							<span class="user-name">{$username}</span>
-							<span class="you-label">you</span>
+							<span class="user-name">{peer.username}</span>
 						</div>
 						<div class="user-badges">
-							{#if muted}
-								<span class="badge muted"><MicOff size={10} /></span>
-							{/if}
-							{#if sharing}
-								<span class="badge sharing"><Monitor size={10} /></span>
-							{/if}
-							{#if cameraOn}
-								<span class="badge sharing"><Video size={10} /></span>
-							{/if}
+							{#if peer.is_muted}<span class="badge muted"><MicOff size={10} /></span>{/if}
+							{#if peer.is_sharing_screen}<span class="badge sharing"><Monitor size={10} /></span>{/if}
+							{#if peer.is_camera_on}<span class="badge sharing"><Video size={10} /></span>{/if}
 						</div>
 					</div>
-
-					<!-- Peers -->
-					{#each peerArray as peer (peer.id)}
-						<!-- svelte-ignore a11y_no_static_element_interactions -->
-						<div
-							class="user-item"
-							oncontextmenu={(e) => openVolumeMenu(peer.id, 'mic', e)}
-						>
-							<div class="user-info">
-								<span class="user-name">{peer.username}</span>
-							</div>
-							<div class="user-badges">
-								{#if peer.is_muted}
-									<span class="badge muted"><MicOff size={10} /></span>
-								{/if}
-								{#if peer.is_sharing_screen}
-									<span class="badge sharing"><Monitor size={10} /></span>
-								{/if}
-								{#if peer.is_camera_on}
-									<span class="badge sharing"><Video size={10} /></span>
-								{/if}
-							</div>
-						</div>
-					{/each}
-				</div>
+				{/each}
 			</div>
 		</aside>
 
-		<!-- Center: video grid / empty state -->
+		<!-- Center -->
 		<main class="center-area">
 			{#if fullscreenPeerId}
 				{@const fsPeer = peerArray.find((p) => p.id === fullscreenPeerId)}
@@ -441,15 +435,12 @@
 					{/if}
 					<div class="fullscreen-overlay">
 						<span class="fs-label">{fsPeer?.username ?? 'Unknown'}</span>
-						<button class="overlay-btn" onclick={() => (fullscreenPeerId = null)}>
-							<Minimize2 size={14} />
-						</button>
+						<button class="overlay-btn" onclick={() => (fullscreenPeerId = null)}><Minimize2 size={14} /></button>
 					</div>
 				</div>
 			{:else if hasVideoFeeds}
 				{@const totalFeeds = screenSharers.length + cameraUsers.length + (cameraOn ? 1 : 0)}
 				<div class="screen-grid" style="--cols: {gridCols(totalFeeds)}">
-					<!-- Screen shares -->
 					{#each screenSharers as peer (peer.id)}
 						<!-- svelte-ignore a11y_no_static_element_interactions -->
 						<div class="screen-tile" oncontextmenu={(e) => openVolumeMenu(peer.id, 'screen', e)}>
@@ -458,22 +449,16 @@
 							{/if}
 							<div class="tile-overlay">
 								<span class="tile-label">{peer.username} <Monitor size={10} /></span>
-								<button class="overlay-btn" onclick={() => { fullscreenPeerId = peer.id; fullscreenType = 'screen'; }}>
-									<Maximize2 size={12} />
-								</button>
+								<button class="overlay-btn" onclick={() => { fullscreenPeerId = peer.id; fullscreenType = 'screen'; }}><Maximize2 size={12} /></button>
 							</div>
 						</div>
 					{/each}
-					<!-- Local camera -->
 					{#if cameraOn && localCameraStream}
 						<div class="screen-tile">
 							<video use:bindScreenStream={localCameraStream} autoplay playsinline muted></video>
-							<div class="tile-overlay">
-								<span class="tile-label">{$username} (you)</span>
-							</div>
+							<div class="tile-overlay"><span class="tile-label">{$username} (you)</span></div>
 						</div>
 					{/if}
-					<!-- Peer cameras -->
 					{#each cameraUsers as peer (peer.id + '-cam')}
 						<!-- svelte-ignore a11y_no_static_element_interactions -->
 						<div class="screen-tile" oncontextmenu={(e) => openVolumeMenu(peer.id, 'mic', e)}>
@@ -482,9 +467,7 @@
 							{/if}
 							<div class="tile-overlay">
 								<span class="tile-label">{peer.username}</span>
-								<button class="overlay-btn" onclick={() => { fullscreenPeerId = peer.id; fullscreenType = 'camera'; }}>
-									<Maximize2 size={12} />
-								</button>
+								<button class="overlay-btn" onclick={() => { fullscreenPeerId = peer.id; fullscreenType = 'camera'; }}><Maximize2 size={12} /></button>
 							</div>
 						</div>
 					{/each}
@@ -498,19 +481,16 @@
 			{/if}
 		</main>
 
-		<!-- Right: chat panel -->
+		<!-- Chat panel -->
 		{#if chatOpen}
+			<!-- svelte-ignore a11y_no_static_element_interactions -->
+			<!-- svelte-ignore a11y_click_events_have_key_events -->
+			<div class="panel-backdrop chat-backdrop-el" onclick={() => (chatOpen = false)}></div>
 			<aside class="chat-panel">
-				<div class="chat-header">
-					<h3>
-						<MessageSquare size={12} />
-						Chat
-					</h3>
-					<button class="icon-btn" onclick={() => (chatOpen = false)}>
-						<X size={14} />
-					</button>
+				<div class="panel-header chat-header">
+					<h3><MessageSquare size={13} /> Chat</h3>
+					<button class="panel-close" onclick={() => (chatOpen = false)}><X size={16} /></button>
 				</div>
-
 				<div class="chat-messages" bind:this={chatContainer}>
 					{#each messages as msg (msg.timestamp + msg.sender_id)}
 						<div class="chat-msg" class:own={msg.sender_id === $userId}>
@@ -519,18 +499,9 @@
 						</div>
 					{/each}
 				</div>
-
 				<div class="chat-input-row">
-					<input
-						type="text"
-						placeholder="Message…"
-						bind:value={chatInput}
-						onkeydown={onChatKeydown}
-						maxlength={2000}
-					/>
-					<button class="send-btn" onclick={sendChat} disabled={!chatInput.trim()}>
-						<Send size={14} />
-					</button>
+					<input type="text" placeholder="Message…" bind:value={chatInput} onkeydown={onChatKeydown} maxlength={2000} />
+					<button class="send-btn" onclick={sendChat} disabled={!chatInput.trim()}><Send size={14} /></button>
 				</div>
 			</aside>
 		{/if}
@@ -538,97 +509,72 @@
 
 	<!-- Bottom controls -->
 	<footer class="controls">
-		{#if error}
-			<span class="error">{error}</span>
-		{/if}
+		{#if error}<span class="ctrl-error">{error}</span>{/if}
 		<div class="control-buttons">
+			<button class="ctrl-btn" class:active={sidebarOpen} onclick={() => (sidebarOpen = !sidebarOpen)} title="Users">
+				<Users size={18} />
+				{#if peerCount > 0}<span class="ctrl-badge">{peerCount}</span>{/if}
+			</button>
 			<button class="ctrl-btn" class:active={muted} class:danger-active={muted} onclick={toggleMute} title={muted ? 'Unmute' : 'Mute'}>
-				{#if muted}
-					<MicOff size={18} />
-				{:else}
-					<Mic size={18} />
-				{/if}
+				{#if muted}<MicOff size={18} />{:else}<Mic size={18} />{/if}
 			</button>
 			<button class="ctrl-btn" class:active={sharing} onclick={toggleScreenShare} title={sharing ? 'Stop sharing' : 'Share screen'}>
-				{#if sharing}
-					<MonitorOff size={18} />
-				{:else}
-					<Monitor size={18} />
-				{/if}
+				{#if sharing}<MonitorOff size={18} />{:else}<Monitor size={18} />{/if}
 			</button>
 			<button class="ctrl-btn" class:active={cameraOn} onclick={toggleCamera} title={cameraOn ? 'Turn off camera' : 'Turn on camera'}>
-				{#if cameraOn}
-					<Video size={18} />
-				{:else}
-					<VideoOff size={18} />
-				{/if}
+				{#if cameraOn}<Video size={18} />{:else}<VideoOff size={18} />{/if}
 			</button>
-			{#if !chatOpen}
-				<button class="ctrl-btn" onclick={() => (chatOpen = true)} title="Open chat">
-					<MessageSquare size={18} />
-				</button>
-			{/if}
+			<button class="ctrl-btn" class:active={chatOpen} onclick={openChat} title="Chat">
+				<MessageSquare size={18} />
+				{#if unreadCount > 0}<span class="ctrl-badge">{unreadCount > 99 ? '99+' : unreadCount}</span>{/if}
+			</button>
 			<div class="device-picker-wrap">
-				<button class="ctrl-btn" class:active={showDevicePicker} onclick={toggleDevicePicker} title="Devices">
-					<Settings size={18} />
-				</button>
+				<button class="ctrl-btn" class:active={showDevicePicker} onclick={toggleDevicePicker} title="Devices"><Settings size={18} /></button>
 				{#if showDevicePicker}
+					<!-- svelte-ignore a11y_no_static_element_interactions -->
+					<!-- svelte-ignore a11y_click_events_have_key_events -->
+					<div class="device-backdrop" onclick={() => (showDevicePicker = false)}></div>
 					<div class="device-picker-popup">
+						<div class="device-picker-handle"><span></span></div>
 						<div class="device-group">
 							<!-- svelte-ignore a11y_label_has_associated_control -->
 							<label class="device-label">Microphone</label>
 							<select class="device-select" value={selectedInputId} onchange={(e) => switchAudioDevice('input', e)}>
-								{#each audioInputDevices as dev (dev.deviceId)}
-									<option value={dev.deviceId}>{dev.label || 'Microphone'}</option>
-								{/each}
+								{#each audioInputDevices as dev (dev.deviceId)}<option value={dev.deviceId}>{dev.label || 'Microphone'}</option>{/each}
 							</select>
 						</div>
 						<div class="device-group">
 							<!-- svelte-ignore a11y_label_has_associated_control -->
 							<label class="device-label">Speaker</label>
 							<select class="device-select" value={selectedOutputId} onchange={(e) => switchAudioDevice('output', e)}>
-								{#each audioOutputDevices as dev (dev.deviceId)}
-									<option value={dev.deviceId}>{dev.label || 'Speaker'}</option>
-								{/each}
+								{#each audioOutputDevices as dev (dev.deviceId)}<option value={dev.deviceId}>{dev.label || 'Speaker'}</option>{/each}
 							</select>
 						</div>
 						<div class="device-group">
 							<!-- svelte-ignore a11y_label_has_associated_control -->
 							<label class="device-label">Camera</label>
 							<select class="device-select" value={selectedVideoId} onchange={switchVideoDevice}>
-								{#each videoInputDevices as dev (dev.deviceId)}
-									<option value={dev.deviceId}>{dev.label || 'Camera'}</option>
-								{/each}
+								{#each videoInputDevices as dev (dev.deviceId)}<option value={dev.deviceId}>{dev.label || 'Camera'}</option>{/each}
 							</select>
 						</div>
 					</div>
 				{/if}
 			</div>
 			<div class="control-divider"></div>
-			<button class="ctrl-btn danger" onclick={leave} title="Leave channel">
-				<LogOut size={18} />
-			</button>
+			<button class="ctrl-btn danger" onclick={leave} title="Leave channel"><LogOut size={18} /></button>
 		</div>
 	</footer>
 </div>
 
-<!-- Volume context menu (rendered outside channel-page to avoid overflow clipping) -->
+<!-- Volume context menu -->
 {#if ctxMenu}
-	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<div class="ctx-backdrop" onclick={closeVolumeMenu} oncontextmenu={(e) => { e.preventDefault(); closeVolumeMenu(); }}></div>
 	<div class="ctx-menu" style="left: {ctxMenu.x}px; top: {ctxMenu.y}px">
 		<span class="ctx-label">{getCtxUsername()} — {ctxMenu.kind === 'mic' ? 'Mic' : 'Screen'}</span>
 		<div class="ctx-slider-row">
-			<input
-				type="range"
-				min="0"
-				max="100"
-				value={getCtxVolume()}
-				oninput={onCtxSliderInput}
-				class="ctx-slider"
-			/>
+			<input type="range" min="0" max="100" value={getCtxVolume()} oninput={onCtxSliderInput} class="ctx-slider" />
 			<span class="ctx-value">{getCtxVolume()}%</span>
 		</div>
 	</div>
@@ -643,52 +589,104 @@
 		overflow: hidden;
 	}
 
+	/* ── Private banner ──────────────────────────────────── */
+
 	.private-channel-banner {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
-		gap: 16px;
-		padding: 12px 20px;
+		gap: 12px;
+		padding: 8px 20px;
 		border-bottom: 1px solid var(--border);
 		background: var(--bg-secondary);
 	}
 
 	.private-channel-copy {
 		display: flex;
-		flex-direction: column;
-		gap: 4px;
+		align-items: center;
+		gap: 10px;
 		min-width: 0;
 	}
 
 	.private-channel-label {
-		font-size: 0.75rem;
+		font-size: 0.7rem;
 		text-transform: uppercase;
 		letter-spacing: 0.08em;
-		color: var(--text-secondary);
+		color: var(--text-muted);
+		flex-shrink: 0;
 	}
 
 	.private-channel-id {
 		font-family: var(--font-mono, 'SFMono-Regular', Consolas, monospace);
-		font-size: 0.95rem;
-		word-break: break-all;
-	}
-
-	.private-channel-hint {
-		font-size: 0.85rem;
+		font-size: 0.8rem;
 		color: var(--text-secondary);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
 	.private-channel-btn {
 		display: inline-flex;
 		align-items: center;
-		gap: 8px;
+		gap: 6px;
 		flex-shrink: 0;
+		padding: 6px 12px;
+		font-size: 0.75rem;
 	}
+
+	/* ── Body ────────────────────────────────────────────── */
 
 	.channel-body {
 		flex: 1;
 		display: flex;
 		overflow: hidden;
+		position: relative;
+	}
+
+	/* ── Shared panel chrome ─────────────────────────────── */
+
+	.panel-backdrop {
+		display: none;
+	}
+
+	.panel-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 12px 16px;
+		border-bottom: 1px solid var(--border);
+		flex-shrink: 0;
+	}
+
+	.panel-header h3 {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		font-size: 0.7rem;
+		font-weight: 500;
+		text-transform: uppercase;
+		color: var(--text-muted);
+		letter-spacing: 0.06em;
+	}
+
+	.panel-close {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 28px;
+		height: 28px;
+		border-radius: 6px;
+		background: transparent;
+		color: var(--text-muted);
+		padding: 0;
+		border: none;
+		cursor: pointer;
+		transition: all 0.1s;
+	}
+
+	.panel-close:hover {
+		background: var(--bg-tertiary);
+		color: var(--text-primary);
 	}
 
 	/* ── Sidebar ─────────────────────────────────────────── */
@@ -698,33 +696,26 @@
 		min-width: 220px;
 		background: var(--bg-secondary);
 		border-right: 1px solid var(--border);
-		padding: 16px;
 		overflow-y: auto;
 		display: flex;
 		flex-direction: column;
 	}
 
-	.sidebar-section h3 {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		font-size: 0.7rem;
-		font-weight: 500;
-		text-transform: uppercase;
-		color: var(--text-muted);
-		margin-bottom: 12px;
-		letter-spacing: 0.06em;
+	.sidebar-header {
+		display: none;
 	}
 
 	.user-list {
 		display: flex;
 		flex-direction: column;
-		gap: 4px;
+		gap: 2px;
+		padding: 16px;
 	}
 
 	.user-item {
 		display: flex;
-		flex-direction: column;
+		align-items: center;
+		justify-content: space-between;
 		gap: 4px;
 		padding: 8px 10px;
 		border-radius: var(--radius-sm);
@@ -743,22 +734,27 @@
 		display: flex;
 		align-items: center;
 		gap: 6px;
+		min-width: 0;
 	}
 
 	.user-name {
 		font-size: 0.8rem;
 		font-weight: 500;
-		word-break: break-all;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
 	.you-label {
-		font-size: 0.65rem;
+		font-size: 0.6rem;
 		color: var(--text-muted);
+		flex-shrink: 0;
 	}
 
 	.user-badges {
 		display: flex;
 		gap: 4px;
+		flex-shrink: 0;
 	}
 
 	.badge {
@@ -769,13 +765,8 @@
 		color: var(--text-muted);
 	}
 
-	.badge.muted {
-		color: var(--danger);
-	}
-
-	.badge.sharing {
-		color: var(--success);
-	}
+	.badge.muted { color: var(--danger); }
+	.badge.sharing { color: var(--success); }
 
 	/* ── Center area ─────────────────────────────────────── */
 
@@ -784,6 +775,7 @@
 		display: flex;
 		overflow: hidden;
 		background: var(--bg-primary);
+		min-width: 0;
 	}
 
 	.empty-center {
@@ -794,18 +786,14 @@
 		justify-content: center;
 		gap: 10px;
 		color: var(--text-muted);
+		padding: 20px;
+		text-align: center;
 	}
 
-	.empty-center p {
-		font-size: 0.9rem;
-		color: var(--text-secondary);
-	}
+	.empty-center p { font-size: 0.9rem; color: var(--text-secondary); }
+	.empty-center span { font-size: 0.8rem; }
 
-	.empty-center span {
-		font-size: 0.8rem;
-	}
-
-	/* ── Screen share grid ───────────────────────────────── */
+	/* ── Video grid ──────────────────────────────────────── */
 
 	.screen-grid {
 		flex: 1;
@@ -846,9 +834,7 @@
 		transition: opacity 0.15s;
 	}
 
-	.screen-tile:hover .tile-overlay {
-		opacity: 1;
-	}
+	.screen-tile:hover .tile-overlay { opacity: 1; }
 
 	.tile-label {
 		font-size: 0.75rem;
@@ -871,9 +857,7 @@
 		transition: background 0.1s;
 	}
 
-	.overlay-btn:hover {
-		background: rgba(255, 255, 255, 0.3);
-	}
+	.overlay-btn:hover { background: rgba(255, 255, 255, 0.3); }
 
 	/* ── Fullscreen view ─────────────────────────────────── */
 
@@ -886,11 +870,7 @@
 		justify-content: center;
 	}
 
-	.fullscreen-view video {
-		width: 100%;
-		height: 100%;
-		object-fit: contain;
-	}
+	.fullscreen-view video { width: 100%; height: 100%; object-fit: contain; }
 
 	.fullscreen-overlay {
 		position: absolute;
@@ -903,9 +883,7 @@
 		transition: opacity 0.15s;
 	}
 
-	.fullscreen-view:hover .fullscreen-overlay {
-		opacity: 1;
-	}
+	.fullscreen-view:hover .fullscreen-overlay { opacity: 1; }
 
 	.fs-label {
 		font-size: 0.8rem;
@@ -916,10 +894,7 @@
 		border-radius: 6px;
 	}
 
-	.waiting-text {
-		color: var(--text-muted);
-		font-size: 0.85rem;
-	}
+	.waiting-text { color: var(--text-muted); font-size: 0.85rem; }
 
 	/* ── Chat panel ──────────────────────────────────────── */
 
@@ -932,43 +907,6 @@
 		border-left: 1px solid var(--border);
 	}
 
-	.chat-header {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		padding: 12px 16px;
-		border-bottom: 1px solid var(--border);
-	}
-
-	.chat-header h3 {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		font-size: 0.7rem;
-		font-weight: 500;
-		text-transform: uppercase;
-		color: var(--text-muted);
-		letter-spacing: 0.06em;
-	}
-
-	.icon-btn {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		width: 28px;
-		height: 28px;
-		border-radius: 6px;
-		background: transparent;
-		color: var(--text-muted);
-		padding: 0;
-		transition: all 0.1s;
-	}
-
-	.icon-btn:hover {
-		background: var(--bg-tertiary);
-		color: var(--text-primary);
-	}
-
 	.chat-messages {
 		flex: 1;
 		overflow-y: auto;
@@ -978,15 +916,8 @@
 		gap: 6px;
 	}
 
-	.chat-msg {
-		display: flex;
-		gap: 8px;
-		line-height: 1.5;
-	}
-
-	.chat-msg.own .msg-author {
-		color: var(--text-primary);
-	}
+	.chat-msg { display: flex; gap: 8px; line-height: 1.5; }
+	.chat-msg.own .msg-author { color: var(--text-primary); }
 
 	.msg-author {
 		font-weight: 600;
@@ -1028,13 +959,8 @@
 		flex-shrink: 0;
 	}
 
-	.send-btn:hover:not(:disabled) {
-		opacity: 0.85;
-	}
-
-	.send-btn:disabled {
-		opacity: 0.2;
-	}
+	.send-btn:hover:not(:disabled) { opacity: 0.85; }
+	.send-btn:disabled { opacity: 0.2; }
 
 	/* ── Controls bar ────────────────────────────────────── */
 
@@ -1042,11 +968,16 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		gap: 12px;
-		padding: 12px 24px;
+		flex-direction: column;
+		gap: 6px;
+		padding: 10px 16px;
+		padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
 		background: var(--bg-secondary);
 		border-top: 1px solid var(--border);
+		z-index: 10;
 	}
+
+	.ctrl-error { color: var(--danger); font-size: 0.75rem; }
 
 	.control-buttons {
 		display: flex;
@@ -1055,27 +986,23 @@
 	}
 
 	.ctrl-btn {
+		position: relative;
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		width: 42px;
-		height: 42px;
+		width: 44px;
+		height: 44px;
 		border-radius: 50%;
 		background: var(--bg-tertiary);
 		color: var(--text-primary);
 		padding: 0;
 		transition: all 0.15s ease;
 		border: 1px solid transparent;
+		flex-shrink: 0;
 	}
 
-	.ctrl-btn:hover {
-		background: var(--bg-hover);
-		border-color: var(--border);
-	}
-
-	.ctrl-btn.active {
-		border-color: var(--text-muted);
-	}
+	.ctrl-btn:hover { background: var(--bg-hover); border-color: var(--border); }
+	.ctrl-btn.active { border-color: var(--text-muted); }
 
 	.ctrl-btn.danger-active {
 		background: color-mix(in srgb, var(--danger) 15%, transparent);
@@ -1083,28 +1010,38 @@
 		border-color: color-mix(in srgb, var(--danger) 30%, transparent);
 	}
 
-	.ctrl-btn.danger {
-		background: var(--danger);
-		color: white;
-		border: none;
-	}
+	.ctrl-btn.danger { background: var(--danger); color: white; border: none; }
+	.ctrl-btn.danger:hover { background: var(--danger-hover); }
 
-	.ctrl-btn.danger:hover {
-		background: var(--danger-hover);
+	.ctrl-badge {
+		position: absolute;
+		top: -2px;
+		right: -2px;
+		min-width: 16px;
+		height: 16px;
+		padding: 0 4px;
+		border-radius: 8px;
+		background: var(--text-primary);
+		color: var(--bg-primary);
+		font-size: 0.6rem;
+		font-weight: 700;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		line-height: 1;
 	}
 
 	.control-divider {
 		width: 1px;
 		height: 24px;
 		background: var(--border);
-		margin: 0 6px;
+		margin: 0 4px;
 	}
 
 	/* ── Device picker ───────────────────────────────────── */
 
-	.device-picker-wrap {
-		position: relative;
-	}
+	.device-picker-wrap { position: relative; }
+	.device-backdrop { display: none; }
 
 	.device-picker-popup {
 		position: absolute;
@@ -1120,14 +1057,12 @@
 		gap: 12px;
 		min-width: 260px;
 		box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
-		z-index: 10;
+		z-index: 30;
 	}
 
-	.device-group {
-		display: flex;
-		flex-direction: column;
-		gap: 4px;
-	}
+	.device-picker-handle { display: none; }
+
+	.device-group { display: flex; flex-direction: column; gap: 4px; }
 
 	.device-label {
 		font-size: 0.7rem;
@@ -1139,7 +1074,7 @@
 
 	.device-select {
 		width: 100%;
-		padding: 6px 10px;
+		padding: 8px 10px;
 		font-size: 0.8rem;
 		border-radius: var(--radius-sm);
 		border: 1px solid var(--border);
@@ -1148,22 +1083,11 @@
 		outline: none;
 	}
 
-	.device-select:focus {
-		border-color: var(--text-muted);
-	}
-
-	.error {
-		color: var(--danger);
-		font-size: 0.75rem;
-	}
+	.device-select:focus { border-color: var(--text-muted); }
 
 	/* ── Volume context menu ─────────────────────────────── */
 
-	.ctx-backdrop {
-		position: fixed;
-		inset: 0;
-		z-index: 100;
-	}
+	.ctx-backdrop { position: fixed; inset: 0; z-index: 100; }
 
 	.ctx-menu {
 		position: fixed;
@@ -1187,11 +1111,7 @@
 		letter-spacing: 0.06em;
 	}
 
-	.ctx-slider-row {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-	}
+	.ctx-slider-row { display: flex; align-items: center; gap: 8px; }
 
 	.ctx-slider {
 		flex: 1;
@@ -1229,5 +1149,168 @@
 		font-variant-numeric: tabular-nums;
 		min-width: 32px;
 		text-align: right;
+	}
+
+	/* ════════════════════════════════════════════════════════
+	 * MOBILE ≤ 768px
+	 * ════════════════════════════════════════════════════════ */
+
+	@media (max-width: 768px) {
+		.panel-backdrop {
+			display: block;
+			position: fixed;
+			inset: 0;
+			z-index: 40;
+			background: rgba(0, 0, 0, 0.5);
+			animation: fadeIn 0.15s ease;
+		}
+
+		.panel-header h3 {
+			font-size: 0.85rem;
+			font-weight: 600;
+			color: var(--text-primary);
+			text-transform: none;
+			letter-spacing: 0;
+		}
+
+		.panel-close {
+			width: 32px;
+			height: 32px;
+		}
+
+		/* Sidebar → slide-over from left */
+		.sidebar {
+			position: fixed;
+			top: 0;
+			left: 0;
+			bottom: 0;
+			z-index: 41;
+			width: 280px;
+			min-width: 0;
+			transform: translateX(-100%);
+			transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+			box-shadow: var(--shadow-lg);
+		}
+
+		.sidebar.open { transform: translateX(0); }
+		.sidebar-header { display: flex; }
+
+		.user-list { padding: 8px 12px; }
+		.user-item { padding: 12px; }
+		.user-name { font-size: 0.85rem; }
+
+		/* Chat → slide-over from right, full width */
+		.chat-panel {
+			position: fixed;
+			top: 0;
+			right: 0;
+			bottom: 0;
+			z-index: 41;
+			width: 100%;
+			max-width: 360px;
+			min-width: 0;
+			border-left: none;
+			box-shadow: var(--shadow-lg);
+			animation: slideRight 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+		}
+
+		.chat-input-row {
+			padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+		}
+
+		/* Video */
+		.center-area { width: 100%; }
+		.screen-grid { grid-template-columns: 1fr !important; }
+		.tile-overlay { opacity: 1; }
+		.fullscreen-overlay { opacity: 1; }
+
+		/* Controls */
+		.controls {
+			padding: 8px 12px;
+			padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+		}
+
+		.ctrl-btn { width: 42px; height: 42px; }
+		.control-divider { margin: 0 2px; }
+
+		/* Private banner */
+		.private-channel-banner { padding: 8px 16px; }
+
+		/* Device picker → bottom sheet */
+		.device-backdrop {
+			display: block;
+			position: fixed;
+			inset: 0;
+			z-index: 29;
+			background: rgba(0, 0, 0, 0.4);
+			animation: fadeIn 0.15s ease;
+		}
+
+		.device-picker-popup {
+			position: fixed;
+			bottom: 0;
+			left: 0;
+			right: 0;
+			top: auto;
+			transform: none;
+			border-radius: 16px 16px 0 0;
+			min-width: 0;
+			padding: 4px 20px 20px;
+			padding-bottom: calc(20px + env(safe-area-inset-bottom, 0px));
+			z-index: 30;
+			animation: slideUp 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+		}
+
+		.device-picker-handle {
+			display: flex;
+			justify-content: center;
+			padding: 8px 0 12px;
+		}
+
+		.device-picker-handle span {
+			width: 36px;
+			height: 4px;
+			border-radius: 2px;
+			background: var(--border);
+		}
+
+		.device-select { padding: 12px; font-size: 0.85rem; }
+
+		/* Context menu → bottom-anchored */
+		.ctx-menu {
+			left: 16px !important;
+			right: 16px;
+			top: auto !important;
+			bottom: 80px;
+			width: auto;
+		}
+	}
+
+	/* ════════════════════════════════════════════════════════
+	 * SMALL MOBILE ≤ 400px
+	 * ════════════════════════════════════════════════════════ */
+
+	@media (max-width: 400px) {
+		.ctrl-btn { width: 38px; height: 38px; }
+		.control-buttons { gap: 4px; }
+		.control-divider { margin: 0 1px; height: 20px; }
+		.sidebar { width: 240px; }
+	}
+
+	/* ── Animations ──────────────────────────────────────── */
+
+	@keyframes fadeIn {
+		from { opacity: 0; }
+		to { opacity: 1; }
+	}
+
+	@keyframes slideRight {
+		from { transform: translateX(100%); }
+		to { transform: translateX(0); }
+	}
+
+	@keyframes slideUp {
+		from { transform: translateY(100%); }
+		to { transform: translateY(0); }
 	}
 </style>

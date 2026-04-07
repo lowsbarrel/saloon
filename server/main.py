@@ -30,6 +30,7 @@ from src.core.state import (
     active_users,
     gc_rate_limiters,
     gc_stale_users,
+    gc_ghost_users,
     lobby_clients,
 )
 from src.routers import channels, users, ws
@@ -47,6 +48,7 @@ async def lifespan(app: FastAPI):  # type: ignore[type-arg]
     tasks = [
         asyncio.create_task(gc_rate_limiters()),
         asyncio.create_task(gc_stale_users()),
+        asyncio.create_task(gc_ghost_users()),
     ]
     yield
     logger.warning("Saloon server shutting down")

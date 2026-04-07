@@ -94,3 +94,29 @@ async def gc_stale_users() -> None:
             user = active_users.pop(uid, None)
             if user:
                 active_usernames.pop(user.username, None)
+
+
+async def gc_ghost_users() -> None:
+    """Periodically remove users with dead WebSockets from channels."""
+    from starlette.websockets import WebSocketState
+
+    while True:
+        await asyncio.sleep(settings.gc_ghost_users_interval)
+        ghost_ids: list[tuple[str, str]] = []
+        async with store._lock:
+            for channel in list(store._channels.values()):
+                for uid, user in list(channel.users.items()):
+                    ws = user.websocket
+                    if ws is None or ws.client_state != WebSocketState.CONNECTED:
+                        ghost_ids.append((channel.id, uid))
+
+        if not ghost_ids:
+            continue
+
+        for channel_id, uid in ghost_ids:
+            await store.leave(channel_id, uid)
+            user = active_users.pop(uid, None)
+            if user:
+                active_usernames.pop(user.username, None)
+
+        await broadcast_lobby()

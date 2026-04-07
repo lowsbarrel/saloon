@@ -64,10 +64,12 @@
 	.app-shell {
 		width: 100vw;
 		height: 100vh;
+		height: 100dvh;
 		display: flex;
 		flex-direction: column;
 		opacity: 0;
 		transition: opacity 0.5s ease;
+		overflow: hidden;
 	}
 
 	.app-shell.revealed {
