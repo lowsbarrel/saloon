@@ -58,7 +58,12 @@ export async function setupChannel(
 		// Fall back to default STUN-only config
 	}
 
-	await pm.initLocalAudio();
+	try {
+		await pm.initLocalAudio();
+	} catch {
+		// No microphone available — continue without local audio so the user
+		// can still receive remote streams (audio, video, screen shares).
+	}
 
 	// ── Signal handlers ──────────────────────────────────────────
 
