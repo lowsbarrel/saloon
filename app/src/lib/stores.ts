@@ -51,10 +51,14 @@ export function getPeerManager(): PeerManager | null {
 	return _peerManager;
 }
 
+export const localIsTalking = writable<boolean>(false);
+
 export function createPeerManager(uid: string): PeerManager {
 	_peerManager?.destroy();
 	_peerManager = new PeerManager(signalingClient, uid, (newPeers) => {
 		peers.set(newPeers);
+	}, (talking) => {
+		localIsTalking.set(talking);
 	});
 	return _peerManager;
 }

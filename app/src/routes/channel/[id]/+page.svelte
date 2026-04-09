@@ -18,7 +18,8 @@
 		chatMessages,
 		resetState,
 		e2eeKeyPair,
-		peerPublicKeys
+		peerPublicKeys,
+		localIsTalking
 	} from '$lib/stores';
 	import { persistSession } from '$lib/persistence';
 	import { setupChannel, subscribeChannelStores } from '$lib/channel-setup';
@@ -80,9 +81,13 @@
 	// Derived
 	let screenSharers = $derived(peerArray.filter((p) => p.is_sharing_screen && p.screenStream));
 	let cameraUsers = $derived(peerArray.filter((p) => p.is_camera_on && p.videoStream));
+	let sortedCameraUsers = $derived(
+		[...cameraUsers].sort((a, b) => (a.is_talking === b.is_talking ? 0 : a.is_talking ? -1 : 1))
+	);
 	let hasVideoFeeds = $derived(screenSharers.length > 0 || cameraUsers.length > 0 || cameraOn);
 	let peerCount = $derived(peerArray.length);
 	let unreadCount = $state(0);
+	let selfTalking = $state(false);
 
 	onMount(async () => {
 		if (!get(isConnected) || !get(userId) || !CHANNEL_SLUG_RE.test(channelId)) {
@@ -121,6 +126,7 @@
 					setCameraOn: (v) => (cameraOn = v),
 				}),
 			);
+			unsubs.push(localIsTalking.subscribe((v) => (selfTalking = v)));
 
 			persistSession(channelId);
 			navigator.mediaDevices.addEventListener('devicechange', onDeviceChange);
@@ -358,8 +364,13 @@
 	function gridCols(count: number): number {
 		if (count <= 1) return 1;
 		if (count <= 4) return 2;
-		if (count <= 9) return 3;
-		return 4;
+		return 3;
+	}
+
+	function spotlightCols(count: number): number {
+		if (count <= 1) return 1;
+		if (count <= 4) return 2;
+		return 3;
 	}
 </script>
 
@@ -395,7 +406,7 @@
 				<button class="panel-close" onclick={() => (sidebarOpen = false)}><X size={16} /></button>
 			</div>
 			<div class="user-list">
-				<div class="user-item self">
+				<div class="user-item self" class:talking={selfTalking}>
 					<div class="user-info">
 						<span class="user-name">{$username}</span>
 						<span class="you-label">you</span>
@@ -408,7 +419,7 @@
 				</div>
 				{#each peerArray as peer (peer.id)}
 					<!-- svelte-ignore a11y_no_static_element_interactions -->
-					<div class="user-item" oncontextmenu={(e) => openVolumeMenu(peer.id, 'mic', e)}>
+					<div class="user-item" class:talking={peer.is_talking} oncontextmenu={(e) => openVolumeMenu(peer.id, 'mic', e)}>
 						<div class="user-info">
 							<span class="user-name">{peer.username}</span>
 						</div>
@@ -439,39 +450,68 @@
 					</div>
 				</div>
 			{:else if hasVideoFeeds}
-				{@const totalFeeds = screenSharers.length + cameraUsers.length + (cameraOn ? 1 : 0)}
-				<div class="screen-grid" style="--cols: {gridCols(totalFeeds)}">
-					{#each screenSharers as peer (peer.id)}
-						<!-- svelte-ignore a11y_no_static_element_interactions -->
-						<div class="screen-tile" oncontextmenu={(e) => openVolumeMenu(peer.id, 'screen', e)}>
-							{#if peer.screenStream}
-								<video use:bindScreenStream={peer.screenStream} autoplay playsinline></video>
-							{/if}
-							<div class="tile-overlay">
-								<span class="tile-label">{peer.username} <Monitor size={10} /></span>
-								<button class="overlay-btn" onclick={() => { fullscreenPeerId = peer.id; fullscreenType = 'screen'; }}><Maximize2 size={12} /></button>
+				{#if screenSharers.length > 0}
+					<!-- Spotlight layout: screen shares large, cameras in filmstrip -->
+					<div class="spotlight-layout">
+						<div class="spotlight-main" style="--spotlight-cols: {spotlightCols(screenSharers.length)}">
+							{#each screenSharers as peer (peer.id)}
+								<!-- svelte-ignore a11y_no_static_element_interactions -->
+								<div class="screen-tile spotlight-tile" oncontextmenu={(e) => openVolumeMenu(peer.id, 'screen', e)}>
+									{#if peer.screenStream}
+										<video use:bindScreenStream={peer.screenStream} autoplay playsinline></video>
+									{/if}
+									<div class="tile-overlay">
+										<span class="tile-label"><Monitor size={10} /> {peer.username}</span>
+										<button class="overlay-btn" onclick={() => { fullscreenPeerId = peer.id; fullscreenType = 'screen'; }}><Maximize2 size={12} /></button>
+									</div>
+								</div>
+							{/each}
+						</div>
+						{#if sortedCameraUsers.length > 0 || cameraOn}
+							<div class="filmstrip">
+								{#if cameraOn && localCameraStream}
+									<div class="filmstrip-tile" class:talking={selfTalking}>
+										<video use:bindScreenStream={localCameraStream} autoplay playsinline muted></video>
+										<span class="filmstrip-label">{$username} (you)</span>
+									</div>
+								{/if}
+								{#each sortedCameraUsers as peer (peer.id + '-cam')}
+									<!-- svelte-ignore a11y_no_static_element_interactions -->
+									<div class="filmstrip-tile" class:talking={peer.is_talking} oncontextmenu={(e) => openVolumeMenu(peer.id, 'mic', e)}>
+										{#if peer.videoStream}
+											<video use:bindScreenStream={peer.videoStream} autoplay playsinline></video>
+										{/if}
+										<span class="filmstrip-label">{peer.username}</span>
+										<button class="filmstrip-maximize" onclick={() => { fullscreenPeerId = peer.id; fullscreenType = 'camera'; }}><Maximize2 size={10} /></button>
+									</div>
+								{/each}
 							</div>
-						</div>
-					{/each}
-					{#if cameraOn && localCameraStream}
-						<div class="screen-tile">
-							<video use:bindScreenStream={localCameraStream} autoplay playsinline muted></video>
-							<div class="tile-overlay"><span class="tile-label">{$username} (you)</span></div>
-						</div>
-					{/if}
-					{#each cameraUsers as peer (peer.id + '-cam')}
-						<!-- svelte-ignore a11y_no_static_element_interactions -->
-						<div class="screen-tile" oncontextmenu={(e) => openVolumeMenu(peer.id, 'mic', e)}>
-							{#if peer.videoStream}
-								<video use:bindScreenStream={peer.videoStream} autoplay playsinline></video>
-							{/if}
-							<div class="tile-overlay">
-								<span class="tile-label">{peer.username}</span>
-								<button class="overlay-btn" onclick={() => { fullscreenPeerId = peer.id; fullscreenType = 'camera'; }}><Maximize2 size={12} /></button>
+						{/if}
+					</div>
+				{:else}
+					<!-- Gallery grid: cameras only -->
+					{@const totalFeeds = sortedCameraUsers.length + (cameraOn ? 1 : 0)}
+					<div class="screen-grid" style="--cols: {gridCols(totalFeeds)}">
+						{#if cameraOn && localCameraStream}
+							<div class="screen-tile" class:talking={selfTalking}>
+								<video use:bindScreenStream={localCameraStream} autoplay playsinline muted></video>
+								<div class="tile-overlay"><span class="tile-label">{$username} (you)</span></div>
 							</div>
-						</div>
-					{/each}
-				</div>
+						{/if}
+						{#each sortedCameraUsers as peer (peer.id + '-cam')}
+							<!-- svelte-ignore a11y_no_static_element_interactions -->
+							<div class="screen-tile" class:talking={peer.is_talking} oncontextmenu={(e) => openVolumeMenu(peer.id, 'mic', e)}>
+								{#if peer.videoStream}
+									<video use:bindScreenStream={peer.videoStream} autoplay playsinline></video>
+								{/if}
+								<div class="tile-overlay">
+									<span class="tile-label">{peer.username}</span>
+									<button class="overlay-btn" onclick={() => { fullscreenPeerId = peer.id; fullscreenType = 'camera'; }}><Maximize2 size={12} /></button>
+								</div>
+							</div>
+						{/each}
+					</div>
+				{/if}
 			{:else}
 				<div class="empty-center">
 					<Video size={36} strokeWidth={1} />
@@ -587,6 +627,7 @@
 		flex-direction: column;
 		height: 100%;
 		overflow: hidden;
+		max-width: 100vw;
 	}
 
 	/* ── Private banner ──────────────────────────────────── */
@@ -641,6 +682,7 @@
 		display: flex;
 		overflow: hidden;
 		position: relative;
+		min-width: 0;
 	}
 
 	/* ── Shared panel chrome ─────────────────────────────── */
@@ -751,6 +793,14 @@
 		flex-shrink: 0;
 	}
 
+	.user-item.talking {
+		background: color-mix(in srgb, var(--success) 10%, transparent);
+	}
+
+	.user-item.talking .user-name {
+		color: var(--success);
+	}
+
 	.user-badges {
 		display: flex;
 		gap: 4px;
@@ -776,6 +826,7 @@
 		overflow: hidden;
 		background: var(--bg-primary);
 		min-width: 0;
+		min-height: 0;
 	}
 
 	.empty-center {
@@ -799,9 +850,12 @@
 		flex: 1;
 		display: grid;
 		grid-template-columns: repeat(var(--cols), 1fr);
+		grid-auto-rows: 1fr;
 		gap: 2px;
 		padding: 2px;
 		background: var(--border-subtle);
+		min-height: 0;
+		overflow-y: auto;
 	}
 
 	.screen-tile {
@@ -811,7 +865,14 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		min-height: 0;
+		min-height: 120px;
+		border: 2px solid transparent;
+		transition: border-color 0.2s;
+	}
+
+	.screen-tile.talking {
+		border-color: var(--success);
+		box-shadow: inset 0 0 0 1px var(--success), 0 0 8px color-mix(in srgb, var(--success) 40%, transparent);
 	}
 
 	.screen-tile video {
@@ -829,12 +890,17 @@
 		align-items: center;
 		justify-content: space-between;
 		padding: 8px 12px;
-		background: linear-gradient(transparent, rgba(0, 0, 0, 0.7));
+		background: linear-gradient(transparent 30%, rgba(0, 0, 0, 0.6));
+		pointer-events: none;
+	}
+
+	.tile-overlay .overlay-btn {
+		pointer-events: auto;
 		opacity: 0;
 		transition: opacity 0.15s;
 	}
 
-	.screen-tile:hover .tile-overlay { opacity: 1; }
+	.screen-tile:hover .tile-overlay .overlay-btn { opacity: 1; }
 
 	.tile-label {
 		font-size: 0.75rem;
@@ -895,6 +961,110 @@
 	}
 
 	.waiting-text { color: var(--text-muted); font-size: 0.85rem; }
+
+	/* ── Spotlight layout ────────────────────────────────── */
+
+	.spotlight-layout {
+		flex: 1;
+		display: flex;
+		flex-direction: column;
+		overflow: hidden;
+		background: var(--border-subtle);
+		gap: 2px;
+	}
+
+	.spotlight-main {
+		flex: 1;
+		display: grid;
+		grid-template-columns: repeat(var(--spotlight-cols), 1fr);
+		grid-auto-rows: 1fr;
+		gap: 2px;
+		min-height: 0;
+	}
+
+	.spotlight-tile {
+		border-color: transparent;
+	}
+
+	/* ── Filmstrip ───────────────────────────────────────── */
+
+	.filmstrip {
+		display: flex;
+		gap: 2px;
+		overflow-x: auto;
+		overflow-y: hidden;
+		flex-shrink: 0;
+		height: 130px;
+		scrollbar-width: thin;
+		scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+	}
+
+	.filmstrip::-webkit-scrollbar { height: 4px; }
+	.filmstrip::-webkit-scrollbar-track { background: transparent; }
+	.filmstrip::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2); border-radius: 2px; }
+
+	.filmstrip-tile {
+		position: relative;
+		flex-shrink: 0;
+		width: 172px;
+		height: 100%;
+		background: #000;
+		overflow: hidden;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		border: 2px solid transparent;
+		transition: border-color 0.2s;
+	}
+
+	.filmstrip-tile.talking {
+		border-color: var(--success);
+		box-shadow: inset 0 0 0 1px var(--success);
+	}
+
+	.filmstrip-tile video {
+		width: 100%;
+		height: 100%;
+		object-fit: cover;
+	}
+
+	.filmstrip-label {
+		position: absolute;
+		bottom: 0;
+		left: 0;
+		right: 0;
+		padding: 4px 8px;
+		font-size: 0.65rem;
+		color: #fff;
+		font-weight: 500;
+		background: linear-gradient(transparent, rgba(0, 0, 0, 0.6));
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		pointer-events: none;
+	}
+
+	.filmstrip-maximize {
+		position: absolute;
+		top: 4px;
+		right: 4px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 22px;
+		height: 22px;
+		border-radius: 4px;
+		background: rgba(255, 255, 255, 0.15);
+		color: #fff;
+		border: none;
+		cursor: pointer;
+		padding: 0;
+		opacity: 0;
+		transition: opacity 0.15s;
+	}
+
+	.filmstrip-tile:hover .filmstrip-maximize { opacity: 1; }
+	.filmstrip-maximize:hover { background: rgba(255, 255, 255, 0.3); }
 
 	/* ── Chat panel ──────────────────────────────────────── */
 
@@ -1219,9 +1389,108 @@
 		}
 
 		/* Video */
-		.center-area { width: 100%; }
-		.screen-grid { grid-template-columns: 1fr !important; }
-		.tile-overlay { opacity: 1; }
+		.center-area {
+			width: 100%;
+			overflow-x: hidden;
+			overflow-y: auto;
+			-webkit-overflow-scrolling: touch;
+		}
+
+		.screen-grid {
+			display: flex !important;
+			flex-direction: column;
+			gap: 4px;
+			padding: 4px;
+			overflow: visible;
+			max-width: 100%;
+			box-sizing: border-box;
+		}
+
+		.screen-tile {
+			flex-shrink: 0;
+			width: 100%;
+			max-width: 100%;
+			min-height: 0;
+			aspect-ratio: 16 / 9;
+			border-radius: 6px;
+			box-sizing: border-box;
+		}
+
+		.screen-tile video {
+			border-radius: 6px;
+		}
+
+		.tile-overlay {
+			border-radius: 0 0 6px 6px;
+		}
+
+		.tile-overlay .overlay-btn {
+			opacity: 1;
+		}
+
+		.spotlight-layout {
+			display: flex !important;
+			flex-direction: column;
+			gap: 4px;
+			padding: 4px;
+			overflow: visible;
+			flex: none;
+			max-width: 100%;
+			box-sizing: border-box;
+		}
+
+		.spotlight-main {
+			display: flex !important;
+			flex-direction: column;
+			gap: 4px;
+			flex: none;
+		}
+
+		.spotlight-tile {
+			flex-shrink: 0;
+			width: 100%;
+			max-width: 100%;
+			aspect-ratio: 16 / 9;
+			border-radius: 6px;
+			box-sizing: border-box;
+		}
+
+		.filmstrip {
+			display: flex;
+			flex-direction: column;
+			gap: 4px;
+			height: auto;
+			overflow: visible;
+		}
+
+		.filmstrip-tile {
+			flex-shrink: 0;
+			width: 100%;
+			max-width: 100%;
+			height: auto;
+			aspect-ratio: 16 / 9;
+			border-radius: 6px;
+			box-sizing: border-box;
+		}
+
+		.filmstrip-tile video {
+			border-radius: 6px;
+		}
+
+		.filmstrip-label {
+			font-size: 0.7rem;
+			padding: 6px 10px;
+			border-radius: 0 0 6px 6px;
+		}
+
+		.filmstrip-maximize {
+			opacity: 1;
+			width: 28px;
+			height: 28px;
+			top: 8px;
+			right: 8px;
+		}
+
 		.fullscreen-overlay { opacity: 1; }
 
 		/* Controls */

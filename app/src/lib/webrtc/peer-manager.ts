@@ -14,6 +14,7 @@ import {
 	switchOutputDevice,
 	type AudioElementStore,
 } from './audio-player';
+import { createVoiceDetector, type VadHandle } from './voice-activity';
 
 const DEFAULT_RTC_CONFIG: RTCConfiguration = { iceServers: [] };
 
@@ -36,8 +37,14 @@ export class PeerManager {
 	private micAudio: AudioElementStore = { elements: new Map(), outputDeviceId: '' };
 	private screenAudio: AudioElementStore = { elements: new Map(), outputDeviceId: '' };
 
+	private peerVadHandles = new Map<string, VadHandle>();
+	private localVadHandle: VadHandle | null = null;
+	private _localIsTalking = false;
+	private onLocalTalkingChanged: ((talking: boolean) => void) | null = null;
+
 	private peerAudioStreams = new Map<string, Map<string, MediaStream>>();
 	private peerVideoStreams = new Map<string, Map<string, MediaStream>>();
+	private pendingCandidates = new Map<string, RTCIceCandidateInit[]>();
 	private trackCleanups = new Map<string, (() => void)[]>();
 	private signaling: SignalingClient;
 	private userId: string;
@@ -48,10 +55,12 @@ export class PeerManager {
 		signaling: SignalingClient,
 		userId: string,
 		onPeersChanged: (peers: Map<string, PeerState>) => void,
+		onLocalTalkingChanged?: (talking: boolean) => void,
 	) {
 		this.signaling = signaling;
 		this.userId = userId;
 		this.onPeersChanged = onPeersChanged;
+		this.onLocalTalkingChanged = onLocalTalkingChanged ?? null;
 	}
 
 	// ── Configuration ──────────────────────────────────────────────────
@@ -72,6 +81,7 @@ export class PeerManager {
 			audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
 			video: false,
 		});
+		this.attachLocalVad(this.localStream);
 		return this.localStream;
 	}
 
@@ -101,6 +111,7 @@ export class PeerManager {
 
 		this.stopLocalTracks(this.localStream, 'audio');
 		this.localStream = newStream;
+		this.attachLocalVad(newStream);
 	}
 
 	async switchAudioOutput(deviceId: string): Promise<void> {
@@ -138,6 +149,7 @@ export class PeerManager {
 			is_muted: false,
 			is_sharing_screen: false,
 			is_camera_on: false,
+			is_talking: false,
 			volume: 1,
 			screenVolume: 1,
 			connection: pc,
@@ -177,19 +189,24 @@ export class PeerManager {
 
 			this.ensureStreamMap(streamStore, peerId).set(stream.id, stream);
 
-			const cleanup = () => {
+			const onEnded = () => {
 				streamStore.get(peerId)?.delete(stream.id);
 				if (isAudio) this.reclassifyAudio(peerId);
 				else this.reclassifyVideo(peerId);
 			};
-			track.addEventListener('ended', cleanup);
-			track.addEventListener('mute', cleanup);
+			const onUnmute = () => {
+				this.ensureStreamMap(streamStore, peerId).set(stream.id, stream);
+				if (isAudio) this.reclassifyAudio(peerId);
+				else this.reclassifyVideo(peerId);
+			};
+			track.addEventListener('ended', onEnded);
+			track.addEventListener('unmute', onUnmute);
 
 			// Store removers so we can detach on peer teardown
 			const removers = this.trackCleanups.get(peerId) ?? [];
 			removers.push(() => {
-				track.removeEventListener('ended', cleanup);
-				track.removeEventListener('mute', cleanup);
+				track.removeEventListener('ended', onEnded);
+				track.removeEventListener('unmute', onUnmute);
 			});
 			this.trackCleanups.set(peerId, removers);
 
@@ -256,6 +273,7 @@ export class PeerManager {
 			if (!isPolite && pc.signalingState !== 'stable') return;
 
 			await pc.setRemoteDescription(new RTCSessionDescription(payload));
+			await this.flushPendingCandidates(senderId, pc);
 			const answer = await pc.createAnswer();
 			await pc.setLocalDescription(answer);
 			this.signaling.send({
@@ -268,6 +286,7 @@ export class PeerManager {
 
 		const pc = await this.createPeerConnection(senderId, resolvedUsername, false);
 		await pc.setRemoteDescription(new RTCSessionDescription(payload));
+		await this.flushPendingCandidates(senderId, pc);
 		const answer = await pc.createAnswer();
 		await pc.setLocalDescription(answer);
 		this.signaling.send({
@@ -281,12 +300,30 @@ export class PeerManager {
 		const peer = this.peers.get(senderId);
 		if (!peer?.connection || !isSdpPayload(payload)) return;
 		await peer.connection.setRemoteDescription(new RTCSessionDescription(payload));
+		await this.flushPendingCandidates(senderId, peer.connection);
 	}
 
 	async handleIceCandidate(senderId: string, payload: Record<string, unknown>): Promise<void> {
+		if (!isIceCandidatePayload(payload)) return;
 		const peer = this.peers.get(senderId);
-		if (!peer?.connection || !isIceCandidatePayload(payload)) return;
+
+		if (!peer?.connection || !peer.connection.remoteDescription) {
+			const queue = this.pendingCandidates.get(senderId) ?? [];
+			queue.push(payload.candidate);
+			this.pendingCandidates.set(senderId, queue);
+			return;
+		}
+
 		await peer.connection.addIceCandidate(new RTCIceCandidate(payload.candidate));
+	}
+
+	private async flushPendingCandidates(peerId: string, pc: RTCPeerConnection): Promise<void> {
+		const candidates = this.pendingCandidates.get(peerId);
+		if (!candidates) return;
+		this.pendingCandidates.delete(peerId);
+		for (const c of candidates) {
+			await pc.addIceCandidate(new RTCIceCandidate(c)).catch(() => {});
+		}
 	}
 
 	// ── Volume ─────────────────────────────────────────────────────────
@@ -422,6 +459,7 @@ export class PeerManager {
 		this.cleanupPeerAudio(peerId, this.screenAudio);
 		this.peerAudioStreams.delete(peerId);
 		this.peerVideoStreams.delete(peerId);
+		this.pendingCandidates.delete(peerId);
 		this.peers.delete(peerId);
 		this.notifyChanged();
 	}
@@ -435,6 +473,9 @@ export class PeerManager {
 		this.peerUsernames.clear();
 		this.peerAudioStreams.clear();
 		this.peerVideoStreams.clear();
+
+		this.localVadHandle?.destroy();
+		this.localVadHandle = null;
 
 		destroyAudioStore(this.micAudio);
 		destroyAudioStore(this.screenAudio);
@@ -466,6 +507,7 @@ export class PeerManager {
 		classifyAudioStreams(peer, this.peerAudioStreams.get(peerId));
 		playAudio(this.micAudio, peer.id, peer.audioStream, peer.volume);
 		playAudio(this.screenAudio, peer.id, peer.screenAudioStream, peer.screenVolume);
+		this.attachPeerVad(peerId, peer);
 		this.peers.set(peerId, peer);
 		this.notifyChanged();
 	}
@@ -513,6 +555,8 @@ export class PeerManager {
 	private flushTrackCleanups(peerId: string): void {
 		for (const fn of this.trackCleanups.get(peerId) ?? []) fn();
 		this.trackCleanups.delete(peerId);
+		this.peerVadHandles.get(peerId)?.destroy();
+		this.peerVadHandles.delete(peerId);
 	}
 
 	private cleanupPeerAudio(peerId: string, store: AudioElementStore): void {
@@ -522,6 +566,34 @@ export class PeerManager {
 			audio.srcObject = null;
 			store.elements.delete(peerId);
 		}
+	}
+
+	private attachPeerVad(peerId: string, peer: PeerState): void {
+		this.peerVadHandles.get(peerId)?.destroy();
+		this.peerVadHandles.delete(peerId);
+		if (!peer.audioStream) return;
+		this.peerVadHandles.set(
+			peerId,
+			createVoiceDetector(peer.audioStream, (talking) => {
+				const p = this.peers.get(peerId);
+				if (p && p.is_talking !== talking) {
+					p.is_talking = talking;
+					this.notifyChanged();
+				}
+			}),
+		);
+	}
+
+	private attachLocalVad(stream: MediaStream): void {
+		this.localVadHandle?.destroy();
+		this.localVadHandle = createVoiceDetector(stream, (talking) => {
+			this._localIsTalking = talking;
+			this.onLocalTalkingChanged?.(talking);
+		});
+	}
+
+	get localIsTalking(): boolean {
+		return this._localIsTalking;
 	}
 
 	private notifyChanged(): void {

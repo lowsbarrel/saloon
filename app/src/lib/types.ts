@@ -72,6 +72,7 @@ export interface PeerState {
 	is_muted: boolean;
 	is_sharing_screen: boolean;
 	is_camera_on: boolean;
+	is_talking: boolean;
 	volume: number; // 0-1, mic volume local only
 	screenVolume: number; // 0-1, screen share audio volume local only
 	connection?: RTCPeerConnection;
